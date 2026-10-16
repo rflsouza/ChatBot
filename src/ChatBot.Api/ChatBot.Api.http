@@ -1,0 +1,34 @@
+@host = http://localhost:5100
+
+### Lista os agentes/modelos
+GET {{host}}/api/agents
+
+### Canal REST (histórico no servidor) — mesmo fluxo que o Telegram usará
+POST {{host}}/channels/rest/conversations/demo-1/messages
+Content-Type: application/json
+
+{ "text": "Olá! Que horas são em São Paulo?", "agentId": "assistant" }
+
+### Continua a mesma conversa
+POST {{host}}/channels/rest/conversations/demo-1/messages
+Content-Type: application/json
+
+{ "text": "E o que eu te perguntei antes?", "agentId": "assistant" }
+
+### Reinicia a conversa
+DELETE {{host}}/channels/rest/conversations/demo-1/?agentId=assistant
+
+### Canal Web (AG-UI, resposta em SSE)
+POST {{host}}/channels/web/agents/assistant
+Content-Type: application/json
+Accept: text/event-stream
+
+{
+  "threadId": "thread_1",
+  "runId": "run_1",
+  "messages": [ { "id": "m1", "role": "user", "content": "Diga oi em uma frase." } ],
+  "tools": [],
+  "context": [],
+  "state": {},
+  "forwardedProps": {}
+}

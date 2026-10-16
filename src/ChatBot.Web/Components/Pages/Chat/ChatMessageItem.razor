@@ -1,0 +1,38 @@
+@if (Message.Role == ChatRole.User)
+{
+    <div class="message user-message">@Message.Text</div>
+}
+else if (Message.Role == ChatRole.Assistant)
+{
+    <div class="message assistant-message">
+        <div class="assistant-avatar">🤖</div>
+        <div class="assistant-body">
+            @if (ToolCalls is { Count: > 0 })
+            {
+                <div class="tool-calls">
+                    @foreach (var tool in ToolCalls)
+                    {
+                        <span class="tool-chip">🔧 @tool</span>
+                    }
+                </div>
+            }
+
+            @* Texto renderizado como texto (sem MarkupString) para evitar XSS vindo do modelo. *@
+            <div class="assistant-text"><span>@Message.Text</span>@if (InProgress)
+                {
+                    <span class="cursor">▍</span>
+                }</div>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired]
+    public required ChatMessage Message { get; set; }
+
+    [Parameter]
+    public bool InProgress { get; set; }
+
+    [Parameter]
+    public IReadOnlyList<string>? ToolCalls { get; set; }
+}
