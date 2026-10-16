@@ -35,7 +35,8 @@ public sealed class ResponseDiagnosticsChatClient(
             int textChars = 0, reasoningChars = 0, toolCalls = 0, chunks = 0;
             ChatFinishReason? finishReason = null;
             // Até chegar o 1º chunk, usa o modelo configurado (útil quando a chamada falha logo de cara).
-            string? modelId = options?.ModelId ?? GetService<ChatClientMetadata>()?.DefaultModelId;
+            string? modelId = options?.ModelId
+                ?? (GetService(typeof(ChatClientMetadata)) as ChatClientMetadata)?.DefaultModelId;
             ProviderError? providerError = null;
             string? lastRawChunk = null;
             var retryAfterFailure = false;
