@@ -1,4 +1,7 @@
 using ChatBot.Api.Agents.Tools;
+using ChatBot.Api.Data;
+using ChatBot.Api.Memory;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.Hosting;
 using Microsoft.Extensions.AI;
@@ -21,23 +24,36 @@ public static class AgentRegistration
 
         builder.Services.AddSingleton(options);
 
+        // Memória (EF Core): histórico na tabela Messages, sessão na tabela Conversations.
+        builder.Services.AddSingleton(sp => new EfChatHistoryProvider(
+            sp.GetRequiredService<IDbContextFactory<ChatBotDbContext>>())
+        {
+            MaxMessagesInContext = options.MaxMessagesInContext,
+        });
+        builder.Services.AddSingleton<EfAgentSessionStore>();
+
         foreach (var definition in options.Agents)
         {
-            builder.AddAIAgent(definition.Id, (services, name) =>
-            {
-                IChatClient chatClient = ChatClientFactory.Create(options.Provider, definition.Model, services);
-
-                return chatClient.AsAIAgent(new ChatClientAgentOptions
+            builder
+                .AddAIAgent(definition.Id, (services, name) =>
                 {
-                    Name = name,
-                    Description = definition.Description,
-                    ChatOptions = new ChatOptions
+                    IChatClient chatClient = ChatClientFactory.Create(options.Provider, definition.Model, services);
+
+                    return chatClient.AsAIAgent(new ChatClientAgentOptions
                     {
-                        Instructions = definition.Instructions,
-                        Tools = definition.EnableTools ? BuiltInTools.All() : null,
-                    },
-                }, services: services);
-            });
+                        Name = name,
+                        Description = definition.Description,
+                        ChatHistoryProvider = services.GetRequiredService<EfChatHistoryProvider>(),
+                        ChatOptions = new ChatOptions
+                        {
+                            Instructions = definition.Instructions,
+                            Tools = definition.EnableTools ? BuiltInTools.All() : null,
+                        },
+                    }, services: services);
+                })
+                // Sessões persistidas no SQLite. Isolamento por usuário fica a cargo do MapAGUIServer
+                // (ativado automaticamente quando houver um AgentIsolationKeyProvider/autenticação).
+                .WithSessionStore((services, _) => services.GetRequiredService<EfAgentSessionStore>(), withIsolation: false);
         }
 
         return builder;

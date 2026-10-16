@@ -25,6 +25,10 @@
     <PackageVersion Include="Azure.Identity" Version="1.21.0" />
 
     <!-- ASP.NET Core -->
-    <PackageVersion Include="Microsoft.AspNetCore.OpenApi" Version="10.0.0" />
+    <PackageVersion Include="Microsoft.AspNetCore.OpenApi" Version="10.0.13" />
+
+    <!-- Persistência: EF Core 10 + SQLite (histórico/memória dos agentes) -->
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.13" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.13" />
   </ItemGroup>
 </Project>

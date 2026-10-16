@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using ChatBot.Api.Agents;
+using ChatBot.Api.Memory;
 using Microsoft.Agents.AI;
 
 namespace ChatBot.Api.Conversations;
@@ -17,12 +18,13 @@ public interface IConversationService
 
     IAsyncEnumerable<string> SendStreamingAsync(ConversationKey key, string userMessage, CancellationToken cancellationToken = default);
 
+    /// <summary>Encerra a conversa atual; a próxima mensagem inicia outra. O histórico antigo fica no banco.</summary>
     Task ResetAsync(ConversationKey key, CancellationToken cancellationToken = default);
 }
 
 public sealed class ConversationService(
     IServiceProvider services,
-    IConversationStore store,
+    EfAgentSessionStore sessions,
     AIOptions options,
     ILogger<ConversationService> logger) : IConversationService
 {
@@ -47,16 +49,14 @@ public sealed class ConversationService(
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         var agent = ResolveAgent(key.AgentId);
-        key = key with { AgentId = agent.Name! };
-        var gate = Locks.GetOrAdd(key.ToString(), _ => new SemaphoreSlim(1, 1));
+        var storeKey = ToStoreKey(key);
+        var gate = Locks.GetOrAdd($"{agent.Name}|{storeKey.SessionId}", _ => new SemaphoreSlim(1, 1));
 
         await gate.WaitAsync(cancellationToken);
         try
         {
-            var stored = await store.GetAsync(key, cancellationToken);
-            AgentSession session = stored is { } state
-                ? await agent.DeserializeSessionAsync(state, cancellationToken: cancellationToken)
-                : await agent.CreateSessionAsync(cancellationToken);
+            // Sessão vem do SQLite (EfAgentSessionStore); histórico é carregado pelo EfChatHistoryProvider.
+            AgentSession session = await sessions.GetOrCreateSessionAsync(agent, storeKey, cancellationToken);
 
             await foreach (var update in agent.RunStreamingAsync(userMessage, session, cancellationToken: cancellationToken))
             {
@@ -66,9 +66,8 @@ public sealed class ConversationService(
                 }
             }
 
-            var serialized = await agent.SerializeSessionAsync(session, cancellationToken: cancellationToken);
-            await store.SaveAsync(key, serialized, cancellationToken);
-            logger.LogDebug("Conversa {Key} atualizada.", key);
+            await sessions.SaveSessionAsync(agent, storeKey, session, cancellationToken);
+            logger.LogDebug("Conversa {Key} atualizada.", storeKey.SessionId);
         }
         finally
         {
@@ -77,7 +76,10 @@ public sealed class ConversationService(
     }
 
     public async Task ResetAsync(ConversationKey key, CancellationToken cancellationToken = default)
-        => await store.DeleteAsync(key with { AgentId = ResolveAgent(key.AgentId).Name! }, cancellationToken);
+        => await sessions.DetachAsync(ResolveAgent(key.AgentId), ToStoreKey(key), cancellationToken);
+
+    /// <summary>"canal:id" — ex.: "telegram:123456". O prefixo vira a coluna Channel da conversa.</summary>
+    private static AgentSessionStoreKey ToStoreKey(ConversationKey key) => new($"{key.Channel}:{key.ConversationId}");
 
     private AIAgent ResolveAgent(string agentId)
     {

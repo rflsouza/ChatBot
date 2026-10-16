@@ -10,6 +10,12 @@ public sealed class AIOptions
     /// <summary>Agente usado quando o canal não especifica um.</summary>
     public string DefaultAgent { get; set; } = "assistant";
 
+    /// <summary>
+    /// Máximo de mensagens do histórico enviadas ao LLM em cada turno (null = todas).
+    /// Todas continuam salvas no banco; isso só limita o contexto (custo/tokens).
+    /// </summary>
+    public int? MaxMessagesInContext { get; set; }
+
     public List<AgentDefinition> Agents { get; set; } = [];
 }
 
