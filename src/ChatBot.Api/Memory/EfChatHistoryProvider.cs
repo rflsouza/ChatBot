@@ -17,7 +17,9 @@ namespace ChatBot.Api.Memory;
 /// </summary>
 public sealed class EfChatHistoryProvider : ChatHistoryProvider
 {
-    private static readonly JsonSerializerOptions StateJsonOptions = new(JsonSerializerDefaults.Web);
+    // O Agent Framework serializa o estado com options.GetTypeInfo(...), que exige um TypeInfoResolver
+    // explícito (um JsonSerializerOptions "cru" falha com "TypeInfoResolver of type '<null>'").
+    private static readonly JsonSerializerOptions StateJsonOptions = MemoryJsonContext.Default.Options;
 
     private readonly IDbContextFactory<ChatBotDbContext> _dbFactory;
     private readonly ProviderSessionState<State> _sessionState;
@@ -136,3 +138,8 @@ public sealed class EfChatHistoryProvider : ChatHistoryProvider
     /// <summary>Estado guardado dentro da <see cref="AgentSession"/>.</summary>
     public sealed record State(Guid ConversationId);
 }
+
+/// <summary>Metadados JSON gerados em tempo de compilação para o estado da sessão.</summary>
+[System.Text.Json.Serialization.JsonSourceGenerationOptions(JsonSerializerDefaults.Web)]
+[System.Text.Json.Serialization.JsonSerializable(typeof(EfChatHistoryProvider.State))]
+internal sealed partial class MemoryJsonContext : System.Text.Json.Serialization.JsonSerializerContext;
