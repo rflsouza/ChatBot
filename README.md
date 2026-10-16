@@ -40,6 +40,7 @@ Teams etc. — todos usando os **mesmos agentes**.
 | Abstração de LLM | **[Microsoft.Extensions.AI](https://learn.microsoft.com/dotnet/ai/microsoft-extensions-ai) 10.10** (`IChatClient`) | Interface única para qualquer provedor + middlewares (logging, OpenTelemetry, function calling) |
 | Provedor | SDK `OpenAI` 2.14 + `Microsoft.Extensions.AI.OpenAI` | Funciona com OpenAI, Azure OpenAI / Microsoft Foundry, GitHub Models, Ollama... |
 | Protocolo Web | **[AG-UI](https://docs.ag-ui.com/)** (`Microsoft.Agents.AI.Hosting.AGUI.AspNetCore` *(preview)* + `AGUI.Client` 1.0) | Protocolo aberto de eventos (SSE) entre agente e interface: texto em streaming, tool calls, estado |
+| Persistência | **EF Core 10 + SQLite** | Memória dos agentes (histórico), sessões e registro de todas as mensagens. Troca fácil para PostgreSQL/SQL Server |
 | Frontend | **Blazor Web App** (Interactive Server) | UI em C#, streaming via SignalR |
 | Build | `.slnx` + Central Package Management | Formato de solução novo e versões centralizadas em `Directory.Packages.props` |
 
@@ -68,37 +69,59 @@ flowchart LR
             TG[Telegram channel<br/><i>futuro</i>]
         end
         CS[IConversationService]
-        ST[(IConversationStore<br/>sessões)]
         subgraph Núcleo
             AG[AIAgent keyed<br/>assistant / expert / ...]
             TO[Ferramentas<br/>BuiltInTools]
             CC[IChatClient<br/>+ Logging + OTel]
         end
+        subgraph Memória [Memória - EF Core]
+            SS[EfAgentSessionStore<br/>sessão por conversa]
+            HP[EfChatHistoryProvider<br/>histórico]
+        end
     end
 
+    DB[(SQLite<br/>Conversations<br/>Messages)]
     LLM[(Provedor LLM<br/>OpenAI / Azure / Ollama...)]
 
     B --> UI
-    AC -- "POST /channels/web/agents/{id}<br/>SSE" --> WEB
+    AC -- "POST /channels/web/agents/{id}<br/>só a nova mensagem + threadId" --> WEB
     R --> REST
     T -.-> TG
     WEB --> AG
     REST --> CS
     TG -.-> CS
-    CS <--> ST
     CS --> AG
+    WEB -. "sessão pelo threadId" .-> SS
+    CS -. "sessão por canal:id" .-> SS
+    AG --> HP
+    SS --> DB
+    HP --> DB
     AG --> TO
     AG --> CC --> LLM
 ```
 
-### Dois modelos de conversa
+### Todos os canais funcionam igual
+
+**O histórico fica sempre no servidor (SQLite).** O canal só envia a **nova mensagem** e um **identificador da conversa**:
 
 | | Canal Web (AG-UI) | Canais de texto (REST, Telegram...) |
 |---|---|---|
-| Quem guarda o histórico | **O cliente** (Blazor envia o histórico a cada turno) | **O servidor** (`IConversationStore`) |
-| Estado no servidor | Nenhum (stateless → escala horizontalmente) | `AgentSession` serializada por conversa |
-| Resposta | Streaming de eventos (texto, tool calls, erros) | Texto final (ou streaming via `SendStreamingAsync`) |
-| Por que | UIs ricas precisam de eventos granulares | Telegram/WhatsApp mandam só a nova mensagem + id do chat |
+| Identificador da conversa | `threadId` (GUID gerado pelo navegador, fica na URL `?c=...`) | `canal:id` (ex.: `rest:demo-1`, `telegram:123456`) |
+| Quem acha a sessão | `MapAGUIServer` → `EfAgentSessionStore` | `ConversationService` → `EfAgentSessionStore` |
+| Quem carrega/grava o histórico | `EfChatHistoryProvider` (tabela `Messages`) | `EfChatHistoryProvider` (tabela `Messages`) |
+| Resposta | Streaming de eventos AG-UI (texto, tool calls, erros) | Texto final (ou streaming via `SendStreamingAsync`) |
+
+### Sessões: vários usuários / várias abas
+
+Sim, cada usuário (e cada aba) tem a **sua própria conversa**:
+
+- Cada aba do navegador é um *circuito* Blazor independente, com seu próprio estado em memória.
+- Cada conversa tem um `threadId` próprio na URL (`/?agent=assistant&c=<threadId>`). Dois usuários abrindo a página
+  recebem `threadId`s diferentes → **conversas e históricos separados** no banco.
+- **F5 / reabrir a URL** recarrega a conversa a partir do banco. **"Nova conversa"** gera outro `threadId`;
+  a anterior continua salva.
+- ⚠️ Ainda **não há autenticação**: quem tiver a URL (o `threadId`) consegue continuar aquela conversa.
+  Com login, o Agent Framework passa a isolar as sessões por usuário (veja [Segurança](#-segurança-e-produção)).
 
 ---
 
@@ -111,32 +134,38 @@ ChatBot/
 ├─ Directory.Packages.props           # versões de TODOS os pacotes NuGet
 └─ src/
    ├─ ChatBot.Api/                    # ── BACKEND ──
-   │  ├─ Program.cs                   # composição: núcleo + canais
-   │  ├─ appsettings.json             # provedor e lista de agentes
+   │  ├─ Program.cs                   # composição: banco + núcleo + canais
+   │  ├─ appsettings.json             # connection string, provedor e lista de agentes
    │  ├─ ChatBot.Api.http             # requisições de exemplo
    │  ├─ Agents/                      # NÚCLEO (não sabe nada de canais)
    │  │  ├─ AIOptions.cs              # modelo da seção "AI" do appsettings
    │  │  ├─ ChatClientFactory.cs      # cria IChatClient (chave ou Entra ID) + logging + OpenTelemetry
-   │  │  ├─ AgentRegistration.cs      # registra cada agente com builder.AddAIAgent(...)
+   │  │  ├─ AgentRegistration.cs      # registra cada agente (AddAIAgent) + memória + session store
    │  │  └─ Tools/BuiltInTools.cs     # ferramentas (function calling) disponíveis aos agentes
+   │  ├─ Data/                        # EF Core
+   │  │  ├─ ChatBotDbContext.cs       # tabelas, índices e relacionamentos
+   │  │  └─ Entities.cs               # Conversation, ConversationMessage, MessageAuthor
+   │  ├─ Memory/                      # integração EF Core ⇄ Agent Framework
+   │  │  ├─ EfChatHistoryProvider.cs  # ChatHistoryProvider: lê/grava a tabela Messages
+   │  │  └─ EfAgentSessionStore.cs    # AgentSessionStore: guarda a AgentSession em Conversations
    │  ├─ Conversations/               # conversas independentes de canal
    │  │  ├─ ConversationKey.cs        # (Canal, ConversationId, AgentId)
-   │  │  ├─ ConversationService.cs    # carrega sessão → executa agente → salva sessão
-   │  │  └─ IConversationStore.cs     # contrato + implementação em memória
+   │  │  ├─ ConversationService.cs    # acha sessão → executa agente → salva sessão
+   │  │  └─ ConversationEndpoints.cs  # GET de histórico / listagem de conversas
    │  └─ Channels/
    │     ├─ Web/WebChannelEndpoints.cs    # GET /api/agents + endpoints AG-UI por agente
    │     ├─ Rest/RestChannelEndpoints.cs  # POST/DELETE de conversas REST
    │     └─ Telegram/README.md            # plano do canal Telegram
    └─ ChatBot.Web/                    # ── FRONTEND ──
       ├─ Program.cs                   # Blazor + HttpClient nomeado para a Api
-      ├─ Services/ChatBotApiClient.cs # catálogo de agentes + cria AGUIChatClient por agente
+      ├─ Services/ChatBotApiClient.cs # agentes, histórico salvo e AGUIChatClient por agente
       ├─ Components/
       │  ├─ App.razor, Routes.razor, _Imports.razor
       │  ├─ Layout/MainLayout.razor
       │  └─ Pages/
       │     ├─ Error.razor
       │     └─ Chat/
-      │        ├─ Chat.razor          # página principal: seletor de modelo, streaming, parar, nova conversa
+      │        ├─ Chat.razor          # página principal: conversa na URL, seletor de modelo, streaming, parar
       │        ├─ Chat.razor.js       # auto-scroll
       │        ├─ ChatMessageItem.razor
       │        ├─ ChatInput.razor     # caixa de texto + enviar/parar
@@ -160,9 +189,12 @@ dotnet --version   # deve começar com 10.
 
 ## ⚙️ Configuração
 
-Toda a configuração de IA fica na seção `AI` de `src/ChatBot.Api/appsettings.json`:
+Toda a configuração fica em `src/ChatBot.Api/appsettings.json`:
 
 ```jsonc
+"ConnectionStrings": {
+  "ChatBot": "Data Source=chatbot.db"         // arquivo SQLite criado na pasta da Api
+},
 "AI": {
   "Provider": {
     "Endpoint": "https://api.openai.com/v1", // qualquer endpoint compatível com OpenAI
@@ -170,6 +202,7 @@ Toda a configuração de IA fica na seção `AI` de `src/ChatBot.Api/appsettings
     "UseEntraId": false                       // true = DefaultAzureCredential (Azure)
   },
   "DefaultAgent": "assistant",                // agente usado quando o canal não informa um
+  "MaxMessagesInContext": 50,                 // últimas N mensagens enviadas ao LLM (null = todas)
   "Agents": [
     {
       "Id": "assistant",                      // vira a rota /channels/web/agents/assistant
@@ -182,6 +215,17 @@ Toda a configuração de IA fica na seção `AI` de `src/ChatBot.Api/appsettings
   ]
 }
 ```
+
+> `MaxMessagesInContext` limita só o **contexto enviado ao modelo** (custo/tokens). Todas as mensagens
+> continuam salvas no banco. O corte sempre começa numa mensagem do usuário, para não separar uma
+> chamada de ferramenta do seu resultado.
+
+### Banco de dados
+
+- O arquivo `chatbot.db` (SQLite) é criado **automaticamente** na primeira execução (`EnsureCreated`).
+- Ele está no `.gitignore`. Para "zerar" tudo, pare a Api e apague `chatbot.db*`.
+- Para inspecionar: [DB Browser for SQLite](https://sqlitebrowser.org/), extensão *SQLite Viewer* do VS Code ou
+  `sqlite3 src/ChatBot.Api/chatbot.db`.
 
 ### Guardando a chave com segurança (desenvolvimento)
 
@@ -233,6 +277,8 @@ dotnet run --project src/ChatBot.Web
 ```
 
 Abra **http://localhost:5000**, escolha o modelo no canto superior direito e converse.
+A URL vira algo como `http://localhost:5000/?agent=assistant&c=4f9c...`: esse é o link da conversa.
+Abra outra aba (ou outro navegador) e você terá outra conversa, independente.
 
 Testes rápidos do backend (sem frontend):
 
@@ -257,7 +303,10 @@ Ou abra `src/ChatBot.Api/ChatBot.Api.http` no Visual Studio / VS Code (extensão
 | `GET` | `/api/agents` | Web | Lista os agentes configurados (`id`, `displayName`, `description`, `model`, `isDefault`) |
 | `POST` | `/channels/web/agents/{id}` | Web | Endpoint **AG-UI**. Corpo: `RunAgentInput`; resposta: `text/event-stream` |
 | `POST` | `/channels/rest/conversations/{conversationId}/messages` | REST | `{ "text": "...", "agentId": "assistant" }` → `{ "conversationId": "...", "reply": "..." }` |
-| `DELETE` | `/channels/rest/conversations/{conversationId}/?agentId=...` | REST | Apaga o histórico da conversa |
+| `DELETE` | `/channels/rest/conversations/{conversationId}/?agentId=...` | REST | Encerra a conversa (a próxima mensagem começa outra). **O histórico continua no banco** |
+| `GET` | `/api/conversations/{agentId}/{sessionId}/messages` | Web | Mensagens (usuário/assistente) da conversa ativa. Web: `sessionId` = `threadId` |
+| `GET` | `/api/conversations?channel=&take=` | — | **Só em Development**: últimas conversas de todos os canais |
+| `GET` | `/api/conversations/{conversationId}` | — | **Só em Development**: todas as mensagens de uma conversa, incluindo ferramentas |
 | `GET` | `/openapi/v1.json` | — | Documento OpenAPI (apenas em Development) |
 
 Exemplo (simplificado) de eventos AG-UI devolvidos pelo canal Web:
@@ -288,33 +337,57 @@ builder.AddAIAgent(definition.Id, (services, name) =>
     {
         Name = name,
         Description = definition.Description,
+        ChatHistoryProvider = services.GetRequiredService<EfChatHistoryProvider>(), // memória no SQLite
         ChatOptions = new ChatOptions
         {
             Instructions = definition.Instructions,
             Tools = definition.EnableTools ? BuiltInTools.All() : null,
         },
     }, services: services);
-});
+})
+.WithSessionStore((services, _) => services.GetRequiredService<EfAgentSessionStore>(), withIsolation: false);
 ```
 
 - `AddAIAgent` registra um `AIAgent` **keyed** pelo `Id` no DI.
+- `ChatHistoryProvider` diz ao agente **de onde vem e para onde vai o histórico** (em vez da memória RAM padrão).
+- `WithSessionStore` diz ao hosting **onde guardar as sessões** — usado automaticamente pelo `MapAGUIServer`.
 - `ChatClientFactory` monta o pipeline do `IChatClient`: `OpenAI ChatClient → AsIChatClient() → UseLogging() → UseOpenTelemetry()`.
 - O `ChatClientAgent` adiciona automaticamente a **invocação de funções** (quando o modelo pede uma ferramenta,
   o framework executa o método C# e devolve o resultado ao modelo).
 
 ### 2. Canal Web (AG-UI)
 
-```
-Blazor (Chat.razor)
-  └─ AGUIChatClient.GetStreamingResponseAsync(histórico)
-       └─ POST /channels/web/agents/{id}  (RunAgentInput JSON)
-            └─ MapAGUIServer → AIAgent.RunStreamingAsync
-                 └─ eventos SSE → ChatResponseUpdate → UI atualiza token a token
+```mermaid
+sequenceDiagram
+    participant U as Usuário
+    participant B as Blazor (Chat.razor)
+    participant A as MapAGUIServer
+    participant S as EfAgentSessionStore
+    participant H as EfChatHistoryProvider
+    participant L as LLM
+    participant D as SQLite
+
+    U->>B: abre /?agent=assistant&c=<threadId>
+    B->>D: GET /api/conversations/assistant/<threadId>/messages
+    U->>B: digita mensagem
+    B->>A: POST /channels/web/agents/assistant { threadId, messages: [nova] }
+    A->>S: GetOrCreateSession(threadId)
+    S->>D: Conversations WHERE SessionKey = threadId
+    A->>H: ProvideChatHistory
+    H->>D: Messages da conversa
+    A->>L: instruções + histórico + nova mensagem (+ tools)
+    L-->>B: tokens (SSE / eventos AG-UI)
+    A->>H: StoreChatHistory (pergunta + resposta)
+    H->>D: INSERT Messages (Author = User / Assistant / Tool)
+    A->>S: SaveSession(threadId)
+    S->>D: UPDATE Conversations
 ```
 
 - `WebChannelEndpoints.MapWebChannel()` chama `endpoints.MapAGUIServer(agent.Id, "/channels/web/agents/{id}")` para cada agente.
 - No frontend, `ChatBotApiClient.CreateChatClient(agentId)` devolve um `AGUIChatClient` — para o Blazor é um `IChatClient` comum.
-- As **instruções (system prompt) ficam no backend**; o frontend só envia mensagens de usuário/assistente.
+- O Blazor manda o `threadId` (e o `runId` anterior como `parentRunId`, como o protocolo AG-UI define) via
+  `ChatOptions.RawRepresentationFactory = _ => new RunAgentInput { ThreadId = ..., ParentRunId = ... }`.
+- As **instruções (system prompt) ficam no backend**; o frontend só envia a mensagem do usuário.
 
 ### 3. Canais de texto (`IConversationService`)
 
@@ -327,9 +400,64 @@ Internamente, `ConversationService`:
 
 1. Resolve o `AIAgent` keyed (ou o `DefaultAgent`).
 2. Adquire um *lock* por conversa (mensagens seguidas do mesmo chat são processadas em ordem).
-3. Carrega a sessão do `IConversationStore` → `agent.DeserializeSessionAsync(...)`, ou cria com `agent.CreateSessionAsync()`.
-4. Executa `agent.RunStreamingAsync(mensagem, session)`.
-5. Serializa com `agent.SerializeSessionAsync(session)` e salva no store.
+3. Busca a sessão no `EfAgentSessionStore` pela chave `"rest:<conversationId>"` (ou cria uma nova).
+4. Executa `agent.RunStreamingAsync(mensagem, session)` — o `EfChatHistoryProvider` carrega e grava o histórico.
+5. Salva a sessão (`SaveSessionAsync`).
+
+`ResetAsync` **não apaga nada**: só desliga a sessão da chave (`SessionKey = NULL`). A próxima mensagem
+cria uma conversa nova; a antiga continua consultável.
+
+### 4. Banco de dados
+
+```mermaid
+erDiagram
+    Conversations ||--o{ Messages : possui
+    Conversations {
+        guid Id PK
+        string AgentId "assistant, expert..."
+        string Channel "web, rest, telegram..."
+        string SessionKey "threadId ou canal:id (NULL = encerrada)"
+        string UserId "futuro: usuário autenticado"
+        string Title "1ª pergunta do usuário"
+        string SessionState "AgentSession serializada (JSON)"
+        datetime CreatedAt
+        datetime UpdatedAt
+    }
+    Messages {
+        long Id PK
+        guid ConversationId FK
+        string Author "User | Assistant | Tool | System"
+        string AuthorName "nome do agente, quando houver"
+        string Text "texto puro, para leitura"
+        string Payload "ChatMessage completa (JSON)"
+        string MessageId
+        datetime CreatedAt
+    }
+```
+
+- **`Messages` é ao mesmo tempo a memória do agente e o registro da conversa.** Tudo que o usuário envia
+  (`Author = User`), tudo que o agente responde (`Assistant`) e as chamadas/resultados de ferramentas (`Tool`/`Assistant`)
+  ficam salvos na ordem em que aconteceram.
+- `Text` é para leitura humana e relatórios; `Payload` guarda a `ChatMessage` completa (inclui tool calls) e é o que
+  volta para o LLM nos próximos turnos.
+- `SessionState` guarda só o estado da sessão (ex.: `{ "EfChatHistoryProvider": { "conversationId": "..." } }`), não as mensagens.
+- Índice único `(AgentId, SessionKey)`: no máximo uma conversa **ativa** por chave.
+
+Consultas úteis:
+
+```sql
+-- Últimas conversas
+SELECT Id, Channel, AgentId, Title, UpdatedAt FROM Conversations ORDER BY UpdatedAt DESC LIMIT 20;
+
+-- Diálogo de uma conversa
+SELECT Author, Text, CreatedAt FROM Messages
+WHERE ConversationId = '<id>' AND Author IN ('User', 'Assistant') AND Text <> ''
+ORDER BY Id;
+
+-- Volume por canal
+SELECT c.Channel, COUNT(*) AS Mensagens FROM Messages m
+JOIN Conversations c ON c.Id = m.ConversationId GROUP BY c.Channel;
+```
 
 ---
 
@@ -372,15 +500,33 @@ public static IList<AITool> All() =>
 As descrições (`[Description]`) são enviadas ao modelo — escreva-as bem, é assim que ele decide quando usar a ferramenta.
 Ferramentas que precisam de serviços do DI podem ser criadas dentro do delegate de `AddAIAgent` usando `services`.
 
-### Persistir conversas (sair do "em memória")
+### Trocar SQLite por PostgreSQL / SQL Server
 
-Implemente `IConversationStore` (ex.: Redis) e troque o registro no `Program.cs`:
+Como tudo passa pelo EF Core, basta trocar o provider no `Program.cs` (e o pacote em `Directory.Packages.props`):
 
 ```csharp
-builder.Services.AddSingleton<IConversationStore, RedisConversationStore>();
+// PostgreSQL: Npgsql.EntityFrameworkCore.PostgreSQL
+options.UseNpgsql(builder.Configuration.GetConnectionString("ChatBot"));
+// SQL Server: Microsoft.EntityFrameworkCore.SqlServer
+options.UseSqlServer(builder.Configuration.GetConnectionString("ChatBot"));
 ```
 
-O estado é um `JsonElement` — pode ser gravado como string/JSON em qualquer banco.
+### Migrations (quando o schema começar a mudar)
+
+Hoje o banco é criado com `EnsureCreated()` — simples, mas **não altera um banco já existente**. Quando for
+evoluir o modelo, passe para migrations:
+
+```bash
+dotnet tool install --global dotnet-ef
+dotnet ef migrations add Inicial --project src/ChatBot.Api
+```
+
+E no `Program.cs` troque `EnsureCreatedAsync()` por `MigrateAsync()`.
+
+### Limitar o contexto enviado ao LLM
+
+`AI:MaxMessagesInContext` (padrão `50`) controla quantas mensagens recentes vão para o modelo em cada turno.
+Para conversas muito longas, um próximo passo é resumir o histórico antigo (*chat reducer*) em vez de cortar.
 
 ### Outros provedores nativos
 
@@ -423,7 +569,7 @@ O núcleo já está pronto; um canal novo é só um adaptador. Roteiro para o Te
    });
    ```
 4. Registrar o webhook no Telegram apontando para `https://<seu-host>/channels/telegram/webhook`.
-5. Trocar o `InMemoryConversationStore` por um store persistente.
+5. Pronto: as conversas aparecem no banco com `Channel = "telegram"` e `SessionKey = "telegram:<chatId>"`.
 
 > Dica: o Telegram reenvia o update se o webhook demorar. Para respostas longas, responda `200` rápido e
 > processe em background (ex.: `Channel<T>` + `BackgroundService`).
@@ -460,9 +606,14 @@ Checklist antes de publicar:
 
 - [ ] **Autenticação** nos endpoints: `MapAGUIServer(...).RequireAuthorization()` e no grupo REST.
 - [ ] **Web → Api** autenticado (token de serviço ou mesmo provedor de identidade).
-- [ ] Se usar sessões no servidor com múltiplos usuários, isole por usuário
-      (`builder.Services.UseClaimsBasedAgentIsolation(...)` do Agent Framework / chave do `ConversationKey`).
-- [ ] **Store persistente** para `IConversationStore`.
+- [ ] **Isolar sessões por usuário.** Hoje qualquer pessoa com o `threadId` (a URL da conversa) consegue
+      continuar e ler aquela conversa. Com autenticação, registre
+      `builder.Services.AddHttpContextAccessor()` + `builder.Services.UseClaimsBasedAgentIsolation(...)`
+      (pacote `Microsoft.Agents.AI.Hosting.AspNetCore`): o `MapAGUIServer` passa a prefixar a chave da sessão
+      com uma partição do usuário (o `EfAgentSessionStore` grava como `<partição>=<valor>|<threadId>`). Nesse momento,
+      ajuste o endpoint de histórico para montar a mesma chave e preencha/filtre a coluna `UserId`.
+- [ ] Remover/proteger os endpoints de listagem (`/api/conversations`) — hoje só existem em Development.
+- [ ] Banco gerenciado (PostgreSQL/SQL Server) com backup e política de retenção (as conversas podem conter dados pessoais — LGPD).
 - [ ] **Segredos** fora do repositório (Key Vault / variáveis de ambiente / Managed Identity).
 - [ ] **Rate limiting** (`builder.Services.AddRateLimiter`) para proteger custo de tokens.
 - [ ] Revisar **ferramentas**: tudo que o modelo pode chamar deve ser seguro para qualquer usuário.
@@ -482,13 +633,21 @@ Checklist antes de publicar:
 | `404 model not found` | `Model` deve ser o **nome do deployment** no Azure, ou um modelo disponível no provedor |
 | Erro de restore de pacote `*-preview*` | Os pacotes de hosting do Agent Framework são preview — confira a versão em `Directory.Packages.props` no [NuGet](https://www.nuget.org/packages?q=Microsoft.Agents.AI) |
 | Ferramentas não são chamadas (Ollama) | Use um modelo com suporte a *tool calling* (ex.: `llama3.1+`, `qwen2.5`) ou `"EnableTools": false` |
+| `SQLite Error 1: 'no such table'` / `no such column` | O banco foi criado com um schema antigo e o `EnsureCreated` não altera bancos existentes → apague `chatbot.db*` (ou passe a usar migrations) |
+| `database is locked` | Outro programa (ex.: DB Browser) está com o arquivo aberto em escrita — feche-o |
+| O agente "esqueceu" a conversa | Verifique se a URL ainda tem o mesmo `c=<threadId>`; "Nova conversa" sempre gera outro |
+| Erro do LLM sobre `tool` sem `tool_calls` | Histórico cortado no meio de uma chamada de ferramenta — aumente `MaxMessagesInContext` ou use `null` |
 
 ---
 
 ## 🗺 Roadmap
 
+- [x] Histórico/memória persistidos com EF Core + SQLite (tabelas `Conversations` e `Messages`)
+- [x] Conversa identificada na URL (várias abas/usuários, F5 mantém a conversa)
 - [ ] Canal **Telegram**
-- [ ] Store persistente (Redis/PostgreSQL)
+- [ ] Lista de conversas anteriores no frontend (depende de autenticação)
+- [ ] Migrations do EF Core + PostgreSQL em produção
+- [ ] Resumo automático de conversas longas (*chat reducer*)
 - [ ] Renderização de **Markdown** sanitizado no chat
 - [ ] Autenticação (Entra ID) no frontend e backend
 - [ ] **Aspire AppHost** para orquestrar Api + Web + dashboard com um único `dotnet run`

@@ -1,5 +1,8 @@
 @page "/"
+@using System.Text.RegularExpressions
+@using AGUI.Abstractions
 @inject ChatBotApiClient Api
+@inject NavigationManager Nav
 @inject IJSRuntime JS
 @implements IAsyncDisposable
 
@@ -12,21 +15,25 @@
         <div class="header-actions">
             @if (agents.Count > 0)
             {
-                <select value="@selectedAgentId" @onchange="OnAgentChangedAsync" disabled="@IsBusy" title="Modelo / agente">
+                <select value="@selectedAgentId" @onchange="OnAgentChanged" disabled="@IsBusy" title="Modelo / agente">
                     @foreach (var agent in agents)
                     {
                         <option value="@agent.Id">@agent.DisplayName (@agent.Model)</option>
                     }
                 </select>
             }
-            <button class="secondary" @onclick="NewConversationAsync" disabled="@IsBusy">Nova conversa</button>
+            <button class="secondary" @onclick="NewConversation" disabled="@IsBusy">Nova conversa</button>
         </div>
     </div>
 </header>
 
 <main class="message-list" @ref="messageListElement">
     <div class="page-width">
-        @if (messages.Count == 0 && inProgress is null)
+        @if (loadingHistory)
+        {
+            <div class="empty-state"><p>Carregando conversa…</p></div>
+        }
+        else if (messages.Count == 0 && inProgress is null)
         {
             <div class="empty-state">
                 <h2>Como posso ajudar?</h2>
@@ -55,17 +62,27 @@
 </main>
 
 <footer class="chat-footer">
-    <ChatInput @ref="chatInput" OnSend="SendAsync" OnStop="Stop" IsBusy="IsBusy" Disabled="@(chatClient is null)" />
+    <ChatInput @ref="chatInput" OnSend="SendAsync" OnStop="Stop" IsBusy="IsBusy" Disabled="@(chatClient is null || loadingHistory)" />
 </footer>
 
 @code {
+    // A URL identifica a conversa: /?agent=assistant&c=<threadId>
+    // => cada aba/usuário tem a sua; recarregar a página (F5) mantém a conversa, que vem do banco.
+    [SupplyParameterFromQuery(Name = "agent")] public string? AgentQuery { get; set; }
+    [SupplyParameterFromQuery(Name = "c")] public string? ConversationQuery { get; set; }
+
+    private static readonly Regex ValidThreadId = new("^[A-Za-z0-9_-]{8,100}$", RegexOptions.Compiled);
+
     private readonly List<ChatMessage> messages = [];
     private readonly List<string> toolCalls = [];
     private IReadOnlyList<AgentInfo> agents = [];
     private string? selectedAgentId;
+    private string? threadId;
+    private string? lastRunId;
     private IChatClient? chatClient;
     private ChatMessage? inProgress;
     private CancellationTokenSource? responseCancellation;
+    private bool loadingHistory;
     private string? error;
     private ChatInput? chatInput;
     private ElementReference messageListElement;
@@ -79,11 +96,72 @@
         try
         {
             agents = await Api.GetAgentsAsync();
-            SelectAgent((agents.FirstOrDefault(a => a.IsDefault) ?? agents.FirstOrDefault())?.Id);
         }
         catch (Exception ex)
         {
             error = $"Não foi possível conectar ao backend: {ex.Message}";
+        }
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (agents.Count == 0)
+        {
+            return;
+        }
+
+        var agentId = agents.Any(a => a.Id == AgentQuery)
+            ? AgentQuery!
+            : (agents.FirstOrDefault(a => a.IsDefault) ?? agents[0]).Id;
+
+        // URL sem conversa (ou inválida): gera um threadId novo e reescreve a URL.
+        if (ConversationQuery is null || !ValidThreadId.IsMatch(ConversationQuery) || agentId != AgentQuery)
+        {
+            var conversation = ConversationQuery is not null && ValidThreadId.IsMatch(ConversationQuery) ? ConversationQuery : NewThreadId();
+            Nav.NavigateTo(BuildUrl(agentId, conversation), replace: true);
+            return;
+        }
+
+        if (agentId == selectedAgentId && ConversationQuery == threadId)
+        {
+            return; // nada mudou
+        }
+
+        await OpenConversationAsync(agentId, ConversationQuery);
+    }
+
+    private async Task OpenConversationAsync(string agentId, string conversationThreadId)
+    {
+        Stop();
+        messages.Clear();
+        toolCalls.Clear();
+        error = null;
+        lastRunId = null;
+
+        if (agentId != selectedAgentId)
+        {
+            chatClient?.Dispose();
+            chatClient = Api.CreateChatClient(agentId);
+            selectedAgentId = agentId;
+        }
+        threadId = conversationThreadId;
+
+        loadingHistory = true;
+        try
+        {
+            foreach (var stored in await Api.GetMessagesAsync(agentId, conversationThreadId))
+            {
+                var role = stored.Author == "User" ? ChatRole.User : ChatRole.Assistant;
+                messages.Add(new ChatMessage(role, stored.Text));
+            }
+        }
+        catch (Exception ex)
+        {
+            error = $"Não foi possível carregar o histórico: {ex.Message}";
+        }
+        finally
+        {
+            loadingHistory = false;
         }
     }
 
@@ -102,25 +180,43 @@
 
     private async Task SendAsync(string text)
     {
-        if (chatClient is null || IsBusy)
+        if (chatClient is null || threadId is null || IsBusy)
         {
             return;
         }
 
         error = null;
         toolCalls.Clear();
-        messages.Add(new ChatMessage(ChatRole.User, text));
+        var userMessage = new ChatMessage(ChatRole.User, text);
+        messages.Add(userMessage);
 
         var responseText = new TextContent(string.Empty);
         inProgress = new ChatMessage(ChatRole.Assistant, [responseText]);
         responseCancellation = new CancellationTokenSource();
         StateHasChanged();
 
+        // O histórico fica no servidor (SQLite). Enviamos só a nova mensagem + o threadId da conversa
+        // (e o runId anterior, como manda o protocolo AG-UI para continuação).
+        var currentThreadId = threadId;
+        var parentRunId = lastRunId;
+        var options = new ChatOptions
+        {
+            RawRepresentationFactory = _ => new RunAgentInput
+            {
+                ThreadId = currentThreadId,
+                ParentRunId = parentRunId,
+            },
+        };
+
         try
         {
-            // AG-UI é stateless: enviamos o histórico completo. As instruções (system prompt) ficam no backend.
-            await foreach (var update in chatClient.GetStreamingResponseAsync(messages.ToList(), cancellationToken: responseCancellation.Token))
+            await foreach (var update in chatClient.GetStreamingResponseAsync([userMessage], options, responseCancellation.Token))
             {
+                if (update.RawRepresentation is RunStartedEvent runStarted)
+                {
+                    lastRunId = runStarted.RunId;
+                }
+
                 foreach (var content in update.Contents)
                 {
                     if (content is FunctionCallContent call && !toolCalls.Contains(call.Name))
@@ -166,35 +262,25 @@
 
     private void Stop() => responseCancellation?.Cancel();
 
-    private async Task NewConversationAsync()
+    // Nova conversa = novo threadId na URL. A anterior continua salva no banco.
+    private void NewConversation() => Nav.NavigateTo(BuildUrl(selectedAgentId ?? agents[0].Id, NewThreadId()));
+
+    private void OnAgentChanged(ChangeEventArgs e)
     {
-        Stop();
-        messages.Clear();
-        toolCalls.Clear();
-        error = null;
-        if (chatInput is not null)
+        if (e.Value?.ToString() is { Length: > 0 } agentId)
         {
-            await chatInput.FocusAsync();
+            Nav.NavigateTo(BuildUrl(agentId, NewThreadId()));
         }
     }
 
-    private async Task OnAgentChangedAsync(ChangeEventArgs e)
-    {
-        SelectAgent(e.Value?.ToString());
-        await NewConversationAsync();
-    }
-
-    private void SelectAgent(string? agentId)
-    {
-        chatClient?.Dispose();
-        chatClient = null;
-        selectedAgentId = agentId;
-
-        if (agentId is not null)
+    private string BuildUrl(string agentId, string conversationThreadId) =>
+        Nav.GetUriWithQueryParameters(Nav.BaseUri, new Dictionary<string, object?>
         {
-            chatClient = Api.CreateChatClient(agentId);
-        }
-    }
+            ["agent"] = agentId,
+            ["c"] = conversationThreadId,
+        });
+
+    private static string NewThreadId() => Guid.NewGuid().ToString("N");
 
     public async ValueTask DisposeAsync()
     {

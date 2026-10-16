@@ -1,6 +1,7 @@
 # Canal Telegram (próxima etapa)
 
 O núcleo já está pronto: o canal Telegram será só um adaptador fino sobre `IConversationService`.
+Histórico, memória e registro das mensagens (tabelas `Conversations`/`Messages`) já funcionam para ele.
 
 Plano:
 
@@ -13,6 +14,6 @@ Plano:
    var reply = await conversations.SendAsync(key, update.Message.Text, ct);
    await bot.SendMessage(update.Message.Chat.Id, reply, cancellationToken: ct);
    ```
-4. Comandos: `/novo` → `ResetAsync`, `/modelo <id>` → guardar o agente escolhido por chat.
-5. Trocar `InMemoryConversationStore` por um store persistente (Redis/PostgreSQL/Cosmos DB).
-6. Registrar no `Program.cs`: `app.MapTelegramChannel();`
+   A conversa fica salva com `Channel = "telegram"` e `SessionKey = "telegram:<chatId>"`.
+4. Comandos: `/novo` → `ResetAsync` (encerra a conversa, mantém o histórico), `/modelo <id>` → guardar o agente escolhido por chat.
+5. Registrar no `Program.cs`: `app.MapTelegramChannel();`

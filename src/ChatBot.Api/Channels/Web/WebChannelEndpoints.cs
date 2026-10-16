@@ -32,7 +32,9 @@ public static class WebChannelEndpoints
             .WithTags("Agents");
 
         // Um endpoint AG-UI por agente: POST /channels/web/agents/{id}
-        // Sem session store: o cliente web envia o histórico a cada turno (stateless, escala horizontalmente).
+        // O navegador envia só a NOVA mensagem + threadId. O MapAGUIServer usa o session store registrado
+        // para o agente (EfAgentSessionStore) para achar a sessão pelo threadId, e o EfChatHistoryProvider
+        // carrega/grava o histórico no SQLite.
         foreach (var agent in options.Agents)
         {
             endpoints.MapAGUIServer(agent.Id, $"{AgentsRoutePrefix}/{agent.Id}")
