@@ -67,7 +67,8 @@ public sealed class EfChatHistoryProvider : ChatHistoryProvider
             // Respostas vazias (ex.: modelo que só "pensou") ficam no banco para auditoria,
             // mas não voltam para o LLM — atrapalham o contexto e alguns modelos passam a responder vazio também.
             .Where(m => m.Role != ChatRole.Assistant
-                        || !string.IsNullOrWhiteSpace(m.Text)
+                        || (!string.IsNullOrWhiteSpace(m.Text)
+                            && !m.Text.StartsWith(Agents.ResponseDiagnosticsChatClient.DiagnosticPrefix, StringComparison.Ordinal))
                         || m.Contents.Any(c => c is FunctionCallContent))
             .ToList();
 

@@ -242,8 +242,12 @@ dotnet user-secrets set "AI:Provider:ApiKey" "<sua-chave>"
 
 Em produção use variáveis de ambiente (`AI__Provider__ApiKey`), Azure Key Vault ou Managed Identity.
 
-Outras opções do provedor: `AI:Provider:TimeoutSeconds` (padrão `300`) é o tempo máximo de cada chamada ao LLM —
-o SDK usa 100 s por padrão, pouco para modelos gratuitos/de raciocínio.
+Outras opções do provedor:
+
+- `AI:Provider:TimeoutSeconds` (padrão `300`): tempo máximo de cada chamada ao LLM — o SDK usa 100 s por padrão,
+  pouco para modelos gratuitos/de raciocínio.
+- `AI:Provider:RetriesOnEmptyResponse` (padrão `1`): quantas vezes repetir a chamada quando o modelo termina sem
+  texto. Se continuar vazio, o usuário recebe um aviso `⚠️ [diagnóstico]` com o motivo (`finish_reason`).
 
 A configuração do Telegram (`Channels:Telegram`) está na seção [Canal Telegram](#-canal-telegram).
 
@@ -760,7 +764,8 @@ Checklist antes de publicar:
 | `database is locked` | Outro programa (ex.: DB Browser) está com o arquivo aberto em escrita — feche-o |
 | O agente "esqueceu" a conversa | Verifique se a URL ainda tem o mesmo `c=<threadId>`; "Nova conversa" sempre gera outro |
 | Erro do LLM sobre `tool` sem `tool_calls` | Histórico cortado no meio de uma chamada de ferramenta — aumente `MaxMessagesInContext` ou use `null` |
-| Resposta em branco / aviso "o modelo terminou sem devolver texto" | Veja o *Warning* `LLM ... terminou SEM texto` no log. `finish_reason=length`: o modelo gastou o limite pensando — troque de modelo |
+| Resposta `⚠️ [diagnóstico] O modelo ... não devolveu texto` | O modelo terminou sem texto mesmo após repetir (`AI:Provider:RetriesOnEmptyResponse`, padrão `1`). A mensagem traz o `finish_reason`: `length` = gastou o limite de tokens pensando; `stop` com raciocínio = só pensou; sem raciocínio = provedor devolveu vazio (comum em modelos `:free`). Troque de modelo. Esses avisos ficam no banco, mas não voltam para o LLM |
+| Não vejo os logs | Os logs vão para a **janela de console da Api** (no Visual Studio, a janela preta que abre ao rodar — não a janela *Output*). Edite o `appsettings.json` de `src/ChatBot.Api` (não o do Web). Um `appsettings.Development.json` local sobrescreve o `appsettings.json` |
 | `Channels:Telegram:BotToken não configurado` | Canal ligado sem token → `dotnet user-secrets set "Channels:Telegram:BotToken" ...` |
 | Log `Telegram: falha ao inicializar o bot` | Token inválido (`401 Unauthorized`) ou sem acesso a `api.telegram.org`. O chat web continua funcionando |
 | Telegram: `409 Conflict: terminated by other getUpdates request` | Outra instância está fazendo polling com o mesmo token — pare-a ou use outro bot |

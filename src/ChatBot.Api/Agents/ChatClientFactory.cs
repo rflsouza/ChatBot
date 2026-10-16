@@ -45,7 +45,10 @@ public static class ChatClientFactory
             .GetChatClient(model)
             .AsIChatClient()
             .AsBuilder()
-            .Use((inner, sp) => new ResponseDiagnosticsChatClient(inner, sp.GetRequiredService<ILogger<ResponseDiagnosticsChatClient>>()))
+            .Use((inner, sp) => new ResponseDiagnosticsChatClient(
+                inner,
+                sp.GetRequiredService<ILogger<ResponseDiagnosticsChatClient>>(),
+                Math.Max(0, provider.RetriesOnEmptyResponse)))
             .UseLogging()
             .UseOpenTelemetry(sourceName: "ChatBot.Api", configure: c => c.EnableSensitiveData = false)
             .Build(services);

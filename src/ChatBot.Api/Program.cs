@@ -8,6 +8,13 @@ using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Logs em uma linha, com horário (ex.: "14:03:21 warn: ChatBot.Api.Agents.ResponseDiagnosticsChatClient[0] LLM ...").
+builder.Logging.AddSimpleConsole(o =>
+{
+    o.SingleLine = true;
+    o.TimestampFormat = "HH:mm:ss ";
+});
+
 builder.Services.AddOpenApi();
 builder.Services.AddProblemDetails();
 

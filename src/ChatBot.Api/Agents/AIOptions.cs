@@ -35,6 +35,9 @@ public sealed class ProviderOptions
 
     /// <summary>Tempo máximo de cada chamada ao LLM, em segundos.</summary>
     public int TimeoutSeconds { get; set; } = 300;
+
+    /// <summary>Quantas vezes repetir a chamada quando o modelo termina sem texto (0 = não repetir).</summary>
+    public int RetriesOnEmptyResponse { get; set; } = 1;
 }
 
 /// <summary>Um agente = modelo + instruções + ferramentas. Cada um vira um endpoint/opção no chat.</summary>
