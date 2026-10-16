@@ -64,6 +64,11 @@ public sealed class EfChatHistoryProvider : ChatHistoryProvider
         var messages = payloads
             .Select(p => JsonSerializer.Deserialize<ChatMessage>(p, AIJsonUtilities.DefaultOptions))
             .OfType<ChatMessage>()
+            // Respostas vazias (ex.: modelo que só "pensou") ficam no banco para auditoria,
+            // mas não voltam para o LLM — atrapalham o contexto e alguns modelos passam a responder vazio também.
+            .Where(m => m.Role != ChatRole.Assistant
+                        || !string.IsNullOrWhiteSpace(m.Text)
+                        || m.Contents.Any(c => c is FunctionCallContent))
             .ToList();
 
         // Ao cortar o histórico, não podemos começar no meio de uma chamada de ferramenta

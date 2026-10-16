@@ -232,6 +232,12 @@
                 responseText.Text += update.Text;
                 StateHasChanged();
             }
+
+            if (string.IsNullOrWhiteSpace(responseText.Text) && error is null)
+            {
+                error = "O modelo terminou sem devolver texto. Modelos gratuitos ou de raciocínio às vezes gastam " +
+                        "toda a resposta \"pensando\". Tente de novo ou escolha outro modelo (detalhes no log da Api).";
+            }
         }
         catch (OperationCanceledException)
         {

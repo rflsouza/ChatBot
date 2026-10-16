@@ -11,7 +11,12 @@ public static class ChatClientFactory
 {
     public static IChatClient Create(ProviderOptions provider, string model, IServiceProvider services)
     {
-        var clientOptions = new OpenAIClientOptions { Endpoint = new Uri(provider.Endpoint) };
+        var clientOptions = new OpenAIClientOptions
+        {
+            Endpoint = new Uri(provider.Endpoint),
+            // Padrão do SDK é 100 s — pouco para modelos gratuitos/de raciocínio lentos.
+            NetworkTimeout = TimeSpan.FromSeconds(provider.TimeoutSeconds),
+        };
 
         OpenAIClient openAIClient;
         if (provider.UseEntraId)
@@ -40,6 +45,7 @@ public static class ChatClientFactory
             .GetChatClient(model)
             .AsIChatClient()
             .AsBuilder()
+            .Use((inner, sp) => new ResponseDiagnosticsChatClient(inner, sp.GetRequiredService<ILogger<ResponseDiagnosticsChatClient>>()))
             .UseLogging()
             .UseOpenTelemetry(sourceName: "ChatBot.Api", configure: c => c.EnableSensitiveData = false)
             .Build(services);

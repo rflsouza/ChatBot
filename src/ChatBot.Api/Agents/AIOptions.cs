@@ -32,6 +32,9 @@ public sealed class ProviderOptions
 
     /// <summary>Autentica via Microsoft Entra ID (DefaultAzureCredential) em vez de chave.</summary>
     public bool UseEntraId { get; set; }
+
+    /// <summary>Tempo máximo de cada chamada ao LLM, em segundos.</summary>
+    public int TimeoutSeconds { get; set; } = 300;
 }
 
 /// <summary>Um agente = modelo + instruções + ferramentas. Cada um vira um endpoint/opção no chat.</summary>
