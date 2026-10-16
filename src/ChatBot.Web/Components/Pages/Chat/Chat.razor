@@ -1,0 +1,210 @@
+@page "/"
+@inject ChatBotApiClient Api
+@inject IJSRuntime JS
+@implements IAsyncDisposable
+
+<PageTitle>ChatBot</PageTitle>
+
+<header class="chat-header">
+    <div class="page-width header-content">
+        <h1>💬 ChatBot</h1>
+
+        <div class="header-actions">
+            @if (agents.Count > 0)
+            {
+                <select value="@selectedAgentId" @onchange="OnAgentChangedAsync" disabled="@IsBusy" title="Modelo / agente">
+                    @foreach (var agent in agents)
+                    {
+                        <option value="@agent.Id">@agent.DisplayName (@agent.Model)</option>
+                    }
+                </select>
+            }
+            <button class="secondary" @onclick="NewConversationAsync" disabled="@IsBusy">Nova conversa</button>
+        </div>
+    </div>
+</header>
+
+<main class="message-list" @ref="messageListElement">
+    <div class="page-width">
+        @if (messages.Count == 0 && inProgress is null)
+        {
+            <div class="empty-state">
+                <h2>Como posso ajudar?</h2>
+                @if (SelectedAgent?.Description is { } description)
+                {
+                    <p>@description</p>
+                }
+            </div>
+        }
+
+        @foreach (var message in messages)
+        {
+            <ChatMessageItem @key="message" Message="message" />
+        }
+
+        @if (inProgress is not null)
+        {
+            <ChatMessageItem Message="inProgress" InProgress="true" ToolCalls="toolCalls" />
+        }
+
+        @if (error is not null)
+        {
+            <div class="error-message">⚠️ @error</div>
+        }
+    </div>
+</main>
+
+<footer class="chat-footer">
+    <ChatInput @ref="chatInput" OnSend="SendAsync" OnStop="Stop" IsBusy="IsBusy" Disabled="@(chatClient is null)" />
+</footer>
+
+@code {
+    private readonly List<ChatMessage> messages = [];
+    private readonly List<string> toolCalls = [];
+    private IReadOnlyList<AgentInfo> agents = [];
+    private string? selectedAgentId;
+    private IChatClient? chatClient;
+    private ChatMessage? inProgress;
+    private CancellationTokenSource? responseCancellation;
+    private string? error;
+    private ChatInput? chatInput;
+    private ElementReference messageListElement;
+    private IJSObjectReference? jsModule;
+
+    private bool IsBusy => inProgress is not null;
+    private AgentInfo? SelectedAgent => agents.FirstOrDefault(a => a.Id == selectedAgentId);
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            agents = await Api.GetAgentsAsync();
+            SelectAgent((agents.FirstOrDefault(a => a.IsDefault) ?? agents.FirstOrDefault())?.Id);
+        }
+        catch (Exception ex)
+        {
+            error = $"Não foi possível conectar ao backend: {ex.Message}";
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            jsModule = await JS.InvokeAsync<IJSObjectReference>("import", "./Components/Pages/Chat/Chat.razor.js");
+        }
+
+        if (jsModule is not null)
+        {
+            await jsModule.InvokeVoidAsync("scrollToBottom", messageListElement);
+        }
+    }
+
+    private async Task SendAsync(string text)
+    {
+        if (chatClient is null || IsBusy)
+        {
+            return;
+        }
+
+        error = null;
+        toolCalls.Clear();
+        messages.Add(new ChatMessage(ChatRole.User, text));
+
+        var responseText = new TextContent(string.Empty);
+        inProgress = new ChatMessage(ChatRole.Assistant, [responseText]);
+        responseCancellation = new CancellationTokenSource();
+        StateHasChanged();
+
+        try
+        {
+            // AG-UI é stateless: enviamos o histórico completo. As instruções (system prompt) ficam no backend.
+            await foreach (var update in chatClient.GetStreamingResponseAsync(messages.ToList(), cancellationToken: responseCancellation.Token))
+            {
+                foreach (var content in update.Contents)
+                {
+                    if (content is FunctionCallContent call && !toolCalls.Contains(call.Name))
+                    {
+                        toolCalls.Add(call.Name);
+                    }
+                    else if (content is ErrorContent err)
+                    {
+                        error = err.Message;
+                    }
+                }
+
+                responseText.Text += update.Text;
+                StateHasChanged();
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Usuário clicou em "Parar": mantemos o que já foi gerado.
+        }
+        catch (Exception ex)
+        {
+            error = $"Erro ao obter resposta: {ex.Message}";
+        }
+        finally
+        {
+            if (!string.IsNullOrWhiteSpace(responseText.Text))
+            {
+                messages.Add(new ChatMessage(ChatRole.Assistant, responseText.Text));
+            }
+
+            inProgress = null;
+            responseCancellation?.Dispose();
+            responseCancellation = null;
+            StateHasChanged();
+        }
+
+        if (chatInput is not null)
+        {
+            await chatInput.FocusAsync();
+        }
+    }
+
+    private void Stop() => responseCancellation?.Cancel();
+
+    private async Task NewConversationAsync()
+    {
+        Stop();
+        messages.Clear();
+        toolCalls.Clear();
+        error = null;
+        if (chatInput is not null)
+        {
+            await chatInput.FocusAsync();
+        }
+    }
+
+    private async Task OnAgentChangedAsync(ChangeEventArgs e)
+    {
+        SelectAgent(e.Value?.ToString());
+        await NewConversationAsync();
+    }
+
+    private void SelectAgent(string? agentId)
+    {
+        chatClient?.Dispose();
+        chatClient = null;
+        selectedAgentId = agentId;
+
+        if (agentId is not null)
+        {
+            chatClient = Api.CreateChatClient(agentId);
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        responseCancellation?.Cancel();
+        chatClient?.Dispose();
+
+        if (jsModule is not null)
+        {
+            try { await jsModule.DisposeAsync(); }
+            catch (JSDisconnectedException) { }
+        }
+    }
+}

@@ -1,0 +1,54 @@
+@inject IJSRuntime JS
+
+<EditForm Model="this" OnSubmit="SubmitAsync" class="input-box page-width">
+    <textarea @ref="textArea" @bind="messageText" placeholder="Digite sua mensagem... (Enter envia, Shift+Enter quebra linha)"
+              rows="1" disabled="@Disabled"></textarea>
+
+    @if (IsBusy)
+    {
+        <button type="button" class="stop-button" title="Parar" @onclick="OnStop">■</button>
+    }
+    else
+    {
+        <button type="submit" class="send-button" title="Enviar" disabled="@Disabled">➤</button>
+    }
+</EditForm>
+
+@code {
+    private ElementReference textArea;
+    private string? messageText;
+
+    [Parameter] public EventCallback<string> OnSend { get; set; }
+    [Parameter] public EventCallback OnStop { get; set; }
+    [Parameter] public bool IsBusy { get; set; }
+    [Parameter] public bool Disabled { get; set; }
+
+    public ValueTask FocusAsync() => textArea.FocusAsync();
+
+    private async Task SubmitAsync()
+    {
+        if (IsBusy || string.IsNullOrWhiteSpace(messageText))
+        {
+            return;
+        }
+
+        var text = messageText.Trim();
+        messageText = null;
+        await OnSend.InvokeAsync(text);
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            try
+            {
+                await using var module = await JS.InvokeAsync<IJSObjectReference>("import", "./Components/Pages/Chat/ChatInput.razor.js");
+                await module.InvokeVoidAsync("init", textArea);
+            }
+            catch (JSDisconnectedException)
+            {
+            }
+        }
+    }
+}
