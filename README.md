@@ -1,13 +1,11 @@
 # 💬 ChatBot — .NET 10 + Microsoft Agent Framework
 
 Chatbot web para conversar com modelos de linguagem (LLMs), construído com o stack de IA atual da Microsoft
-e com um backend **multicanal**: hoje atende o chat web (Blazor) e uma API REST; amanhã Telegram, WhatsApp,
-Teams etc. — todos usando os **mesmos agentes**.
+e com um backend **multicanal**: atende o chat web (Blazor), o **Telegram** e uma API REST — todos usando os
+**mesmos agentes** e a mesma memória. Outros canais (WhatsApp, Teams...) seguem o mesmo padrão.
 
-> ⚠️ **Status:** versão inicial. O código foi escrito com base nas APIs da release
-> [`dotnet-1.25.0`](https://github.com/microsoft/agent-framework/releases/tag/dotnet-1.25.0) do Microsoft Agent Framework,
-> mas **ainda não foi compilado/executado** no ambiente em que foi gerado (sem SDK .NET 10 nem acesso ao NuGet).
-> Rode `dotnet build` e abra uma issue se algo não compilar.
+> ℹ️ Baseado nas APIs da release
+> [`dotnet-1.25.0`](https://github.com/microsoft/agent-framework/releases/tag/dotnet-1.25.0) do Microsoft Agent Framework.
 
 ---
 
@@ -22,11 +20,12 @@ Teams etc. — todos usando os **mesmos agentes**.
 7. [Endpoints do backend](#-endpoints-do-backend)
 8. [Como funciona por dentro](#-como-funciona-por-dentro)
 9. [Customizando](#-customizando)
-10. [Adicionando um novo canal (ex.: Telegram)](#-adicionando-um-novo-canal-ex-telegram)
-11. [Observabilidade](#-observabilidade)
-12. [Segurança e produção](#-segurança-e-produção)
-13. [Solução de problemas](#-solução-de-problemas)
-14. [Roadmap](#-roadmap)
+10. [Canal Telegram](#-canal-telegram)
+11. [Adicionando outro canal](#-adicionando-outro-canal)
+12. [Observabilidade](#-observabilidade)
+13. [Segurança e produção](#-segurança-e-produção)
+14. [Solução de problemas](#-solução-de-problemas)
+15. [Roadmap](#-roadmap)
 
 ---
 
@@ -40,6 +39,7 @@ Teams etc. — todos usando os **mesmos agentes**.
 | Abstração de LLM | **[Microsoft.Extensions.AI](https://learn.microsoft.com/dotnet/ai/microsoft-extensions-ai) 10.10** (`IChatClient`) | Interface única para qualquer provedor + middlewares (logging, OpenTelemetry, function calling) |
 | Provedor | SDK `OpenAI` 2.14 + `Microsoft.Extensions.AI.OpenAI` | Funciona com OpenAI, Azure OpenAI / Microsoft Foundry, GitHub Models, Ollama... |
 | Protocolo Web | **[AG-UI](https://docs.ag-ui.com/)** (`Microsoft.Agents.AI.Hosting.AGUI.AspNetCore` *(preview)* + `AGUI.Client` 1.0) | Protocolo aberto de eventos (SSE) entre agente e interface: texto em streaming, tool calls, estado |
+| Telegram | **[Telegram.Bot](https://github.com/TelegramBots/Telegram.Bot) 22.10** | Cliente oficial da comunidade para a Bot API (polling e webhook) |
 | Persistência | **EF Core 10 + SQLite** | Memória dos agentes (histórico), sessões e registro de todas as mensagens. Troca fácil para PostgreSQL/SQL Server |
 | Frontend | **Blazor Web App** (Interactive Server) | UI em C#, streaming via SignalR |
 | Build | `.slnx` + Central Package Management | Formato de solução novo e versões centralizadas em `Directory.Packages.props` |
@@ -55,7 +55,7 @@ flowchart LR
     subgraph Clientes
         B[Navegador<br/>Blazor UI]
         R[Integrações<br/>REST / testes]
-        T[Telegram<br/><i>futuro</i>]
+        T[App do Telegram]
     end
 
     subgraph ChatBot.Web [ChatBot.Web :5000]
@@ -66,7 +66,7 @@ flowchart LR
         subgraph Canais
             WEB[Web channel<br/>AG-UI / SSE]
             REST[REST channel]
-            TG[Telegram channel<br/><i>futuro</i>]
+            TG[Telegram channel<br/>polling / webhook]
         end
         CS[IConversationService]
         subgraph Núcleo
@@ -86,10 +86,10 @@ flowchart LR
     B --> UI
     AC -- "POST /channels/web/agents/{id}<br/>só a nova mensagem + threadId" --> WEB
     R --> REST
-    T -.-> TG
+    T <-- "Bot API" --> TG
     WEB --> AG
     REST --> CS
-    TG -.-> CS
+    TG --> CS
     CS --> AG
     WEB -. "sessão pelo threadId" .-> SS
     CS -. "sessão por canal:id" .-> SS
@@ -149,13 +149,19 @@ ChatBot/
    │  │  ├─ EfChatHistoryProvider.cs  # ChatHistoryProvider: lê/grava a tabela Messages
    │  │  └─ EfAgentSessionStore.cs    # AgentSessionStore: guarda a AgentSession em Conversations
    │  ├─ Conversations/               # conversas independentes de canal
-   │  │  ├─ ConversationKey.cs        # (Canal, ConversationId, AgentId)
+   │  │  ├─ ConversationKey.cs        # (Canal, ConversationId, AgentId, UserId)
    │  │  ├─ ConversationService.cs    # acha sessão → executa agente → salva sessão
    │  │  └─ ConversationEndpoints.cs  # GET de histórico / listagem de conversas
    │  └─ Channels/
    │     ├─ Web/WebChannelEndpoints.cs    # GET /api/agents + endpoints AG-UI por agente
    │     ├─ Rest/RestChannelEndpoints.cs  # POST/DELETE de conversas REST
-   │     └─ Telegram/README.md            # plano do canal Telegram
+   │     └─ Telegram/
+   │        ├─ TelegramOptions.cs             # seção Channels:Telegram
+   │        ├─ TelegramChannelExtensions.cs   # AddTelegramChannel / MapTelegramChannel (webhook)
+   │        ├─ TelegramBotService.cs          # inicialização, polling e fila de processamento
+   │        ├─ TelegramUpdateProcessor.cs     # comandos + pergunta ao agente + envio da resposta
+   │        ├─ TelegramChatAgents.cs          # qual modelo cada chat usa (/modelo)
+   │        └─ TelegramFormatter.cs           # Markdown → HTML do Telegram + divisão em 4096 chars
    └─ ChatBot.Web/                    # ── FRONTEND ──
       ├─ Program.cs                   # Blazor + HttpClient nomeado para a Api
       ├─ Services/ChatBotApiClient.cs # agentes, histórico salvo e AGUIChatClient por agente
@@ -236,6 +242,11 @@ dotnet user-secrets set "AI:Provider:ApiKey" "<sua-chave>"
 
 Em produção use variáveis de ambiente (`AI__Provider__ApiKey`), Azure Key Vault ou Managed Identity.
 
+Outras opções do provedor: `AI:Provider:TimeoutSeconds` (padrão `300`) é o tempo máximo de cada chamada ao LLM —
+o SDK usa 100 s por padrão, pouco para modelos gratuitos/de raciocínio.
+
+A configuração do Telegram (`Channels:Telegram`) está na seção [Canal Telegram](#-canal-telegram).
+
 ### Provedores suportados
 
 | Provedor | `Endpoint` | Autenticação | Observação |
@@ -307,6 +318,7 @@ Ou abra `src/ChatBot.Api/ChatBot.Api.http` no Visual Studio / VS Code (extensão
 | `GET` | `/api/conversations/{agentId}/{sessionId}/messages` | Web | Mensagens (usuário/assistente) da conversa ativa. Web: `sessionId` = `threadId` |
 | `GET` | `/api/conversations?channel=&take=` | — | **Só em Development**: últimas conversas de todos os canais |
 | `GET` | `/api/conversations/{conversationId}` | — | **Só em Development**: todas as mensagens de uma conversa, incluindo ferramentas |
+| `POST` | `/channels/telegram/webhook` | Telegram | Recebe updates do Telegram. **Só existe no modo Webhook**; exige o header `X-Telegram-Bot-Api-Secret-Token` |
 | `GET` | `/openapi/v1.json` | — | Documento OpenAPI (apenas em Development) |
 
 Exemplo (simplificado) de eventos AG-UI devolvidos pelo canal Web:
@@ -417,7 +429,7 @@ erDiagram
         string AgentId "assistant, expert..."
         string Channel "web, rest, telegram..."
         string SessionKey "threadId ou canal:id (NULL = encerrada)"
-        string UserId "futuro: usuário autenticado"
+        string UserId "ex.: telegram:<id> (web: futuro login)"
         string Title "1ª pergunta do usuário"
         string SessionState "AgentSession serializada (JSON)"
         datetime CreatedAt
@@ -536,45 +548,154 @@ O Agent Framework também tem pacotes prontos (ex.: `Microsoft.Agents.AI.Anthrop
 
 ---
 
-## 📨 Adicionando um novo canal (ex.: Telegram)
+## 📨 Canal Telegram
 
-O núcleo já está pronto; um canal novo é só um adaptador. Roteiro para o Telegram
-(detalhes em [`src/ChatBot.Api/Channels/Telegram/README.md`](src/ChatBot.Api/Channels/Telegram/README.md)):
+O bot do Telegram usa **os mesmos agentes, a mesma memória e as mesmas tabelas** do chat web.
+Cada chat do Telegram é uma conversa (`Channel = "telegram"`, `SessionKey = "telegram:<chatId>"`).
 
-1. Adicionar o pacote `Telegram.Bot` em `Directory.Packages.props` e no `ChatBot.Api.csproj`.
-2. Configuração:
-   ```json
-   "Channels": { "Telegram": { "BotToken": "", "SecretToken": "", "AgentId": "assistant" } }
-   ```
-3. Criar `Channels/Telegram/TelegramChannelEndpoints.cs`:
+### 1. Criar o bot
+
+1. No Telegram, abra o [@BotFather](https://t.me/BotFather) e envie `/newbot`.
+2. Escolha um nome e um *username* terminado em `bot` (ex.: `MeuChatBot_bot`).
+3. Copie o **token** (`123456789:AA...`). Ele é a senha do bot: não commite nem compartilhe.
+
+### 2. Configurar
+
+```bash
+cd src/ChatBot.Api
+dotnet user-secrets set "Channels:Telegram:Enabled" "true"
+dotnet user-secrets set "Channels:Telegram:BotToken" "123456789:AA..."
+```
+
+Opções em `Channels:Telegram` (`appsettings.json`):
+
+| Opção | Padrão | Descrição |
+|---|---|---|
+| `Enabled` | `false` | Liga o canal. Desligado, nada do Telegram é registrado |
+| `BotToken` | — | Token do BotFather (**use user-secrets / variável de ambiente**) |
+| `Mode` | `Polling` | `Polling`: a Api busca as mensagens (ideal em desenvolvimento, **não precisa de URL pública**). `Webhook`: o Telegram envia para a Api (produção) |
+| `WebhookUrl` | — | Só no modo Webhook: URL **HTTPS pública** completa, ex. `https://meu-host/channels/telegram/webhook` |
+| `SecretToken` | — | Só no modo Webhook (**obrigatório**): segredo que o Telegram envia em cada chamada. Só `A-Z a-z 0-9 _ -`, até 256 caracteres |
+| `DefaultAgent` | `""` | Agente para chats novos. Vazio = `AI:DefaultAgent` |
+| `AllowedUserIds` | `[]` | Ids de usuário do Telegram autorizados. Vazio = **qualquer pessoa** |
+| `MaxConcurrency` | `8` | Quantos chats são atendidos em paralelo |
+| `DropPendingUpdates` | `false` | `true` ignora as mensagens enviadas enquanto a Api estava parada |
+
+> 💡 Recomendo preencher `AllowedUserIds` enquanto testa: o bot é público e cada mensagem gasta tokens do seu provedor.
+> Para descobrir seu id, envie qualquer mensagem ao [@userinfobot](https://t.me/userinfobot).
+> ```bash
+> dotnet user-secrets set "Channels:Telegram:AllowedUserIds:0" "123456789"
+> ```
+
+### 3. Rodar (modo Polling)
+
+```bash
+dotnet run --project src/ChatBot.Api
+```
+
+No log deve aparecer `Telegram: bot @MeuChatBot_bot recebendo via polling.` Abra o bot no Telegram e envie `/start`.
+
+### Comandos do bot
+
+| Comando | O que faz |
+|---|---|
+| `/start` | Boas-vindas, modelo atual e ajuda |
+| `/novo` | Encerra a conversa atual e começa outra. **O histórico continua no banco** |
+| `/modelo` | Lista os agentes de `AI:Agents` (✅ = atual) |
+| `/modelo <id>` | Troca o agente do chat (ex.: `/modelo expert`) |
+| `/ajuda` | Lista os comandos |
+
+Os comandos são registrados no menu do Telegram automaticamente na inicialização (`SetMyCommands`).
+
+### Como funciona
+
+```mermaid
+sequenceDiagram
+    participant U as Usuário (Telegram)
+    participant T as Telegram
+    participant B as TelegramBotService
+    participant Q as Fila (Channel<Update>)
+    participant P as TelegramUpdateProcessor
+    participant C as ConversationService
+    participant L as LLM
+
+    U->>T: mensagem
+    alt Polling
+        B->>T: getUpdates (long polling)
+        T-->>B: updates
+    else Webhook
+        T->>B: POST /channels/telegram/webhook (+ secret)
+        B-->>T: 200 OK imediato
+    end
+    B->>Q: enfileira
+    Q->>P: até MaxConcurrency em paralelo
+    P->>T: "digitando…" (a cada 4 s)
+    P->>C: SendAsync(telegram:<chatId>, texto)
+    C->>L: histórico (SQLite) + mensagem
+    L-->>C: resposta
+    P->>T: sendMessage (HTML, em partes de até ~3500 caracteres)
+```
+
+- **Fila + processamento em segundo plano:** o webhook responde `200` na hora (o Telegram reenvia o update se
+  demorar). Chats diferentes são atendidos em paralelo; mensagens do **mesmo** chat são processadas em ordem
+  (lock no `ConversationService`).
+- **Formatação:** os LLMs respondem em Markdown; o `TelegramFormatter` converte para o HTML aceito pelo Telegram
+  (negrito, itálico, código, blocos de código, links, títulos e listas). Tabelas ficam como texto. Se o Telegram
+  rejeitar o HTML, a mensagem é reenviada como texto puro.
+- **Mensagens longas** são divididas (limite do Telegram: 4096 caracteres), preferindo quebras de parágrafo.
+- **Grupos:** o bot só responde a comandos ou quando é mencionado (`@MeuChatBot_bot pergunta...`). A conversa é do
+  grupo inteiro (um histórico por chat).
+- **Usuário:** a coluna `Conversations.UserId` recebe `telegram:<id do usuário>`.
+- **Escolha de modelo (`/modelo`):** guardada em memória. Depois de reiniciar a Api, o chat volta a usar o agente da
+  sua conversa ativa mais recente (ou o padrão).
+- **Só texto** por enquanto: fotos, áudios e figurinhas recebem um aviso.
+- Se o token estiver errado ou o Telegram estiver fora do ar, o erro vai para o log e **só o canal Telegram é
+  desativado** — o chat web continua funcionando.
+
+### Modo Webhook (produção)
+
+O Telegram precisa alcançar a Api por **HTTPS público** (portas 443, 80, 88 ou 8443).
+
+```bash
+dotnet user-secrets set "Channels:Telegram:Mode" "Webhook"
+dotnet user-secrets set "Channels:Telegram:WebhookUrl" "https://meu-host/channels/telegram/webhook"
+dotnet user-secrets set "Channels:Telegram:SecretToken" "um-segredo-longo-e-aleatorio_123"
+```
+
+Na inicialização a Api chama `setWebhook` sozinha. Para testar webhook na sua máquina, use um túnel
+(ex.: `ngrok http 5100` ou *Dev Tunnels* do Visual Studio) e coloque a URL HTTPS do túnel em `WebhookUrl`.
+
+Para voltar ao polling basta trocar `Mode` para `Polling`: o webhook é removido automaticamente
+(o Telegram não permite os dois ao mesmo tempo).
+
+> ⚠️ Só **uma** instância pode fazer polling com o mesmo token. Se rodar a Api em dois lugares (ex.: sua máquina e
+> o servidor), use bots diferentes ou o modo Webhook.
+
+Consulta útil:
+
+```sql
+-- Conversas do Telegram
+SELECT Id, SessionKey, UserId, AgentId, Title, UpdatedAt FROM Conversations
+WHERE Channel = 'telegram' ORDER BY UpdatedAt DESC;
+```
+
+---
+
+## 🧩 Adicionando outro canal
+
+O Telegram é o modelo a seguir (`src/ChatBot.Api/Channels/Telegram/`). Um canal novo (WhatsApp, Teams, Slack,
+Discord, e-mail...) só precisa:
+
+1. **Receber** a mensagem (webhook ou polling) e **responder rápido** ao provedor, processando em segundo plano.
+2. Montar a chave e chamar o núcleo:
    ```csharp
-   app.MapPost("/channels/telegram/webhook", async (Update update, HttpRequest req,
-       ITelegramBotClient bot, IConversationService conversations, CancellationToken ct) =>
-   {
-       // 1. validar header X-Telegram-Bot-Api-Secret-Token
-       if (update.Message is not { Text: { } text } msg) return Results.Ok();
-
-       var key = new ConversationKey("telegram", msg.Chat.Id.ToString(), AgentId: "");
-
-       if (text == "/novo")
-       {
-           await conversations.ResetAsync(key, ct);
-           await bot.SendMessage(msg.Chat.Id, "Conversa reiniciada ✅", cancellationToken: ct);
-           return Results.Ok();
-       }
-
-       var reply = await conversations.SendAsync(key, text, ct);
-       await bot.SendMessage(msg.Chat.Id, reply, cancellationToken: ct);
-       return Results.Ok();
-   });
+   var key = new ConversationKey("whatsapp", numeroDoContato, agentId, UserId: $"whatsapp:{numeroDoContato}");
+   string reply = await conversations.SendAsync(key, texto, ct);
    ```
-4. Registrar o webhook no Telegram apontando para `https://<seu-host>/channels/telegram/webhook`.
-5. Pronto: as conversas aparecem no banco com `Channel = "telegram"` e `SessionKey = "telegram:<chatId>"`.
+3. **Enviar** a resposta no formato do canal (limites de tamanho, Markdown/HTML).
+4. Registrar no `Program.cs` (`builder.AddXxxChannel()` / `app.MapXxxChannel()`).
 
-> Dica: o Telegram reenvia o update se o webhook demorar. Para respostas longas, responda `200` rápido e
-> processe em background (ex.: `Channel<T>` + `BackgroundService`).
-
-O mesmo padrão serve para WhatsApp, Microsoft Teams (Microsoft 365 Agents SDK), Slack, Discord, e-mail etc.
+Histórico, memória, troca de agente, ferramentas e o registro nas tabelas vêm prontos.
 
 ---
 
@@ -612,6 +733,8 @@ Checklist antes de publicar:
       (pacote `Microsoft.Agents.AI.Hosting.AspNetCore`): o `MapAGUIServer` passa a prefixar a chave da sessão
       com uma partição do usuário (o `EfAgentSessionStore` grava como `<partição>=<valor>|<threadId>`). Nesse momento,
       ajuste o endpoint de histórico para montar a mesma chave e preencha/filtre a coluna `UserId`.
+- [ ] **Telegram:** modo `Webhook` com `SecretToken` forte (o endpoint rejeita chamadas sem o header correto),
+      token em Key Vault/variável de ambiente e, se o bot não for público, `AllowedUserIds` preenchido.
 - [ ] Remover/proteger os endpoints de listagem (`/api/conversations`) — hoje só existem em Development.
 - [ ] Banco gerenciado (PostgreSQL/SQL Server) com backup e política de retenção (as conversas podem conter dados pessoais — LGPD).
 - [ ] **Segredos** fora do repositório (Key Vault / variáveis de ambiente / Managed Identity).
@@ -637,6 +760,13 @@ Checklist antes de publicar:
 | `database is locked` | Outro programa (ex.: DB Browser) está com o arquivo aberto em escrita — feche-o |
 | O agente "esqueceu" a conversa | Verifique se a URL ainda tem o mesmo `c=<threadId>`; "Nova conversa" sempre gera outro |
 | Erro do LLM sobre `tool` sem `tool_calls` | Histórico cortado no meio de uma chamada de ferramenta — aumente `MaxMessagesInContext` ou use `null` |
+| Resposta em branco / aviso "o modelo terminou sem devolver texto" | Veja o *Warning* `LLM ... terminou SEM texto` no log. `finish_reason=length`: o modelo gastou o limite pensando — troque de modelo |
+| `Channels:Telegram:BotToken não configurado` | Canal ligado sem token → `dotnet user-secrets set "Channels:Telegram:BotToken" ...` |
+| Log `Telegram: falha ao inicializar o bot` | Token inválido (`401 Unauthorized`) ou sem acesso a `api.telegram.org`. O chat web continua funcionando |
+| Telegram: `409 Conflict: terminated by other getUpdates request` | Outra instância está fazendo polling com o mesmo token — pare-a ou use outro bot |
+| Telegram: bot não responde no modo Webhook | Confira `WebhookUrl` (HTTPS público, mesmo caminho `/channels/telegram/webhook`). Veja `https://api.telegram.org/bot<TOKEN>/getWebhookInfo` (campo `last_error_message`) |
+| Telegram: bot não responde em grupo | Ele só responde a comandos ou menções (`@SeuBot ...`) |
+| Telegram: "Você não tem permissão" | Seu id não está em `Channels:Telegram:AllowedUserIds` |
 
 ---
 
@@ -644,7 +774,10 @@ Checklist antes de publicar:
 
 - [x] Histórico/memória persistidos com EF Core + SQLite (tabelas `Conversations` e `Messages`)
 - [x] Conversa identificada na URL (várias abas/usuários, F5 mantém a conversa)
-- [ ] Canal **Telegram**
+- [x] Canal **Telegram** (polling e webhook, comandos, troca de modelo por chat)
+- [ ] Telegram: resposta em streaming (editar a mensagem enquanto o modelo escreve)
+- [ ] Telegram: áudio (transcrição) e imagens
+- [ ] Guardar a escolha de `/modelo` no banco
 - [ ] Lista de conversas anteriores no frontend (depende de autenticação)
 - [ ] Migrations do EF Core + PostgreSQL em produção
 - [ ] Resumo automático de conversas longas (*chat reducer*)

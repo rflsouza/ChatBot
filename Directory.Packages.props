@@ -30,5 +30,8 @@
     <!-- Persistência: EF Core 10 + SQLite (histórico/memória dos agentes) -->
     <PackageVersion Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.13" />
     <PackageVersion Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.13" />
+
+    <!-- Canal Telegram -->
+    <PackageVersion Include="Telegram.Bot" Version="22.10.3.3" />
   </ItemGroup>
 </Project>

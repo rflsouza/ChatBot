@@ -67,6 +67,10 @@ public sealed class ConversationService(
             }
 
             await sessions.SaveSessionAsync(agent, storeKey, session, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(key.UserId))
+            {
+                await sessions.SetUserIdAsync(agent, storeKey, key.UserId, cancellationToken);
+            }
             logger.LogDebug("Conversa {Key} atualizada.", storeKey.SessionId);
         }
         finally

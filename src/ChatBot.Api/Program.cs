@@ -1,5 +1,6 @@
 using ChatBot.Api.Agents;
 using ChatBot.Api.Channels.Rest;
+using ChatBot.Api.Channels.Telegram;
 using ChatBot.Api.Channels.Web;
 using ChatBot.Api.Conversations;
 using ChatBot.Api.Data;
@@ -20,7 +21,7 @@ builder.Services.AddSingleton<IConversationService, ConversationService>();
 
 // Canais
 builder.Services.AddWebChannel();
-// builder.Services.AddTelegramChannel(builder.Configuration);   // próxima etapa
+builder.AddTelegramChannel();   // só liga se Channels:Telegram:Enabled = true
 
 var app = builder.Build();
 
@@ -43,6 +44,6 @@ app.MapGet("/health", () => Results.Ok("ok")).ExcludeFromDescription();
 app.MapWebChannel();   // AG-UI  -> Blazor
 app.MapRestChannel();  // REST   -> integrações/testes
 app.MapConversationEndpoints(app.Environment.IsDevelopment());
-// app.MapTelegramChannel();                                     // próxima etapa
+app.MapTelegramChannel();       // webhook (só no modo Webhook)
 
 await app.RunAsync();

@@ -77,6 +77,18 @@ public sealed class EfAgentSessionStore(
                 .SetProperty(c => c.UpdatedAt, DateTime.UtcNow), cancellationToken);
     }
 
+    /// <summary>Grava o usuário dono da conversa ativa (se ainda não estiver preenchido).</summary>
+    public async Task SetUserIdAsync(AIAgent agent, AgentSessionStoreKey key, string userId, CancellationToken cancellationToken = default)
+    {
+        var agentId = AgentIdOf(agent);
+        var sessionKey = ToStorageKey(key);
+
+        await using var db = await dbFactory.CreateDbContextAsync(cancellationToken);
+        await db.Conversations
+            .Where(c => c.AgentId == agentId && c.SessionKey == sessionKey && c.UserId == null)
+            .ExecuteUpdateAsync(s => s.SetProperty(c => c.UserId, userId), cancellationToken);
+    }
+
     /// <summary>
     /// "sessionId" ou, se houver partições de isolamento (ex.: usuário autenticado), "k1=v1;k2=v2|sessionId".
     /// </summary>
