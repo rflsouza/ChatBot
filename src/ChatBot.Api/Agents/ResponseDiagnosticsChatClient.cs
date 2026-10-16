@@ -1,3 +1,4 @@
+using System.ClientModel;
 using System.ClientModel.Primitives;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
@@ -33,12 +34,55 @@ public sealed class ResponseDiagnosticsChatClient(
             var stopwatch = Stopwatch.StartNew();
             int textChars = 0, reasoningChars = 0, toolCalls = 0, chunks = 0;
             ChatFinishReason? finishReason = null;
-            string? modelId = null;
+            // Até chegar o 1º chunk, usa o modelo configurado (útil quando a chamada falha logo de cara).
+            string? modelId = options?.ModelId ?? GetService<ChatClientMetadata>()?.DefaultModelId;
             ProviderError? providerError = null;
             string? lastRawChunk = null;
+            var retryAfterFailure = false;
 
-            await foreach (var update in base.GetStreamingResponseAsync(messageList, options, cancellationToken))
+            await using var enumerator = base.GetStreamingResponseAsync(messageList, options, cancellationToken)
+                .GetAsyncEnumerator(cancellationToken);
+
+            while (true)
             {
+                // "yield" não pode ficar dentro de try/catch: o MoveNext é protegido separadamente.
+                Exception? failure = null;
+                bool hasNext;
+                try
+                {
+                    hasNext = await enumerator.MoveNextAsync();
+                }
+                catch (Exception ex) when (ex is ClientResultException or HttpRequestException
+                                           || (ex is TaskCanceledException && !cancellationToken.IsCancellationRequested))
+                {
+                    failure = ex;
+                    hasNext = false;
+                }
+
+                if (failure is not null)
+                {
+                    var status = (failure as ClientResultException)?.Status ?? 0;
+                    logger.LogWarning(failure, "LLM {Model} falhou (tentativa {Attempt}/{Max}): HTTP {Status}.",
+                        modelId, attempt, retriesOnEmpty + 1, status);
+
+                    // Só vale repetir erro temporário do servidor (5xx) ou de rede; 401/402/404/429 não melhoram na hora.
+                    var transient = status >= 500 || failure is HttpRequestException;
+                    if (transient && attempt <= retriesOnEmpty && chunks == 0)
+                    {
+                        retryAfterFailure = true;
+                        break;
+                    }
+
+                    yield return Diagnostic(modelId, $"{DiagnosticPrefix} {DescribeFailure(failure, status)}");
+                    yield break;
+                }
+
+                if (!hasNext)
+                {
+                    break;
+                }
+
+                var update = enumerator.Current;
                 chunks++;
                 if (update.RawRepresentation is StreamingChatCompletionUpdate raw)
                 {
@@ -63,8 +107,14 @@ public sealed class ResponseDiagnosticsChatClient(
                 }
 
                 finishReason ??= update.FinishReason;
-                modelId ??= update.ModelId;
+                modelId = update.ModelId ?? modelId;
                 yield return update;
+            }
+
+            if (retryAfterFailure)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
+                continue;
             }
 
             var reason = finishReason?.Value ?? "(nenhum)";
@@ -110,6 +160,28 @@ public sealed class ResponseDiagnosticsChatClient(
                 yield break;
             }
         }
+    }
+
+    /// <summary>Mensagem amigável para erros HTTP/rede do provedor.</summary>
+    private static string DescribeFailure(Exception failure, int status)
+    {
+        // ClientResultException.Message = "HTTP 402 (: )\r\n\r\n<mensagem do provedor>" — fica só a parte útil.
+        var detail = failure.Message.Split('\n', 2) is [_, var rest] && !string.IsNullOrWhiteSpace(rest)
+            ? rest.Trim()
+            : failure.Message;
+        detail = Truncate(detail, 400)!;
+
+        return status switch
+        {
+            401 or 403 => $"O provedor recusou a chave de API (HTTP {status}). Confira `AI:Provider:ApiKey`. Detalhe: {detail}",
+            402 => $"O provedor exige créditos para este modelo (HTTP 402). No OpenRouter, use um modelo com sufixo `:free` " +
+                   $"ou adicione créditos à conta. Detalhe: {detail}",
+            404 => $"Modelo ou endpoint não encontrado (HTTP 404). Confira o `Model` do agente e o `AI:Provider:Endpoint`. Detalhe: {detail}",
+            429 => $"Limite de uso atingido (HTTP 429) — comum em modelos gratuitos. Aguarde um pouco ou troque de modelo. Detalhe: {detail}",
+            >= 500 => $"O provedor do modelo está com problemas (HTTP {status}). Tente de novo em instantes. Detalhe: {detail}",
+            0 => $"Não foi possível falar com o provedor (rede/timeout). Detalhe: {detail}",
+            _ => $"O provedor retornou erro HTTP {status}. Detalhe: {detail}",
+        };
     }
 
     /// <summary>MessageId próprio => vira uma mensagem separada no histórico (e é filtrada do contexto do LLM).</summary>
