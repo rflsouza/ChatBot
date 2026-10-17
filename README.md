@@ -137,6 +137,7 @@ ChatBot/
 ├─ Directory.Build.props              # net10.0, nullable, implicit usings para todos os projetos
 ├─ Directory.Packages.props           # versões de TODOS os pacotes NuGet
 ├─ TODO/HA.md                         # plano de escala horizontal / alta disponibilidade
+├─ docs/MCP.md                        # guia de uso dos servidores MCP
 └─ src/
    ├─ ChatBot.Api/                    # ── BACKEND ──
    │  ├─ Program.cs                   # composição: banco + núcleo + canais
@@ -161,6 +162,7 @@ ChatBot/
    │  │  ├─ McpOptions.cs             # seção Mcp:Servers (type/url/headers/command/args/env)
    │  │  ├─ McpToolProvider.cs        # conexões, lista de ferramentas, reconexão em segundo plano
    │  │  ├─ McpContextProvider.cs     # AIContextProvider: injeta as ferramentas a cada execução
+   │  │  ├─ McpHttpDiagnosticsHandler.cs # loga método/status/headers (mascarados) das chamadas HTTP
    │  │  └─ McpExtensions.cs          # AddMcpServers / GET /api/mcp/servers
    │  ├─ Presence/                    # quem está com o chat web aberto (em memória)
    │  │  ├─ WebPresenceTracker.cs     # lista recebida do Web, expira em 90 s
@@ -616,6 +618,8 @@ Os agentes podem usar ferramentas de qualquer servidor **MCP** (Model Context Pr
 [SDK C# oficial](https://github.com/modelcontextprotocol/csharp-sdk) (`ModelContextProtocol.Core` 2.2).
 O formato é o mesmo de VS Code / Claude / Kiro: `type`, `url`, `headers` (HTTP) ou `command`, `args`, `env` (stdio).
 
+> 📘 **Guia completo, passo a passo e solução de problemas: [`docs/MCP.md`](docs/MCP.md).**
+
 ### Cadastrar servidores
 
 Em `src/ChatBot.Api/appsettings.json`, seção `Mcp:Servers` (o nome da chave é o nome do servidor):
@@ -626,7 +630,7 @@ Em `src/ChatBot.Api/appsettings.json`, seção `Mcp:Servers` (o nome da chave é
   "RefreshIntervalSeconds": 300,    // tenta de novo os que falharam e recarrega as ferramentas
   "Servers": {
     "XgenMcp-pr-3351": {
-      "type": "http",                                   // http (auto), streamable-http, sse ou stdio
+      "type": "streamable-http",                        // streamable-http, sse, http (auto) ou stdio
       "url": "https://desenv.teste.com.br/v2/api/mcp",
       "headers": {
         "X-API-KEY": "",                                // segredo → user-secrets (abaixo)
@@ -653,7 +657,7 @@ dotnet user-secrets set "Mcp:Servers:XgenMcp-pr-3351:Headers:X-API-KEY" "xxxxxxx
 
 | Opção | Padrão | Descrição |
 |---|---|---|
-| `type` | `http` | `http` detecta Streamable HTTP ou SSE; `streamable-http`; `sse`; `stdio` |
+| `type` | `http` | `streamable-http` (recomendado para servidores modernos); `sse`; `http` tenta Streamable HTTP e depois SSE; `stdio` |
 | `url` | — | Endpoint (http/sse) |
 | `headers` | `{}` | Enviados em toda chamada (http/sse) |
 | `command` / `args` / `env` | — | Processo local (stdio) |
@@ -692,7 +696,8 @@ info: ChatBot.Api.Mcp.McpToolProvider[0] MCP XgenMcp-pr-3351: conectado (Xgen), 
 warn: ChatBot.Api.Mcp.McpToolProvider[0] MCP filesystem: falha ao conectar/listar ferramentas (...). Nova tentativa em 300 s.
 ```
 
-Em Development, `GET /api/mcp/servers` mostra status, erro e ferramentas de cada servidor (**nunca** os headers).
+Em Development, `GET /api/mcp/servers` mostra status, erro, ferramentas e os headers **mascarados** de cada servidor.
+Para ver cada requisição HTTP ao MCP (método, status, headers mascarados), use `"ChatBot.Api.Mcp": "Debug"` em `Logging:LogLevel`.
 
 > ⚠️ **Segurança:** as ferramentas MCP são executadas **automaticamente** quando o modelo pede, para qualquer usuário de
 > qualquer canal. Cadastre só servidores confiáveis, restrinja com `allowedTools` e use credenciais com o mínimo de
@@ -923,6 +928,7 @@ Checklist antes de publicar:
 | Telegram: bot não responde no modo Webhook | Confira `WebhookUrl` (HTTPS público, mesmo caminho `/channels/telegram/webhook`). Veja `https://api.telegram.org/bot<TOKEN>/getWebhookInfo` (campo `last_error_message`) |
 | Telegram: bot não responde em grupo | Ele só responde a comandos ou menções (`@SeuBot ...`) |
 | MCP: ferramentas não aparecem | Veja `GET /api/mcp/servers` e o log `MCP <nome>: falha...`. Confira `url`, headers (`401`/`403`) e se o agente tem o servidor em `McpServers` |
+| MCP: `401` e `405` juntos no log | O `401` (POST) é a causa: credencial vazia/errada. O `405` (GET/SSE) é só a tentativa seguinte do `type: "http"`. Use `streamable-http` — detalhes em [`docs/MCP.md`](docs/MCP.md#5-problemas-comuns) |
 | MCP: `Type ... não suportado` | Use `http`, `streamable-http`, `sse` ou `stdio` |
 | Telegram: "Você não tem permissão" | Seu id não está em `Channels:Telegram:AllowedUserIds` |
 

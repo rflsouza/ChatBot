@@ -90,6 +90,9 @@ public sealed partial class McpToolProvider(
                     state?.ServerName,
                     state?.Error,
                     state?.UpdatedAt,
+                    s.Value.Url,
+                    // Só nome + valor mascarado: confirma que o header foi carregado sem expor o segredo.
+                    s.Value.Headers.ToDictionary(h => h.Key, h => McpHttpDiagnosticsHandler.Mask(h.Key, h.Value)),
                     state?.Tools.Select(t => t.Name).ToList() ?? []);
             })
             .ToList();
@@ -132,6 +135,18 @@ public sealed partial class McpToolProvider(
         timeout.CancelAfter(TimeSpan.FromSeconds(Math.Max(5, options.ConnectTimeoutSeconds)));
 
         McpClient? client = current?.Client;
+
+        if (current is null)
+        {
+            foreach (var header in server.Headers.Where(h => string.IsNullOrWhiteSpace(h.Value)))
+            {
+                logger.LogWarning(
+                    "MCP {Server}: o header '{Header}' está VAZIO e será enviado assim. Configure com: " +
+                    "dotnet user-secrets set \"Mcp:Servers:{Server}:Headers:{Header}\" \"<valor>\"",
+                    name, header.Key, name, header.Key);
+            }
+        }
+
         try
         {
             client ??= await McpClient.CreateAsync(CreateTransport(name, server), loggerFactory: loggerFactory,
@@ -162,14 +177,15 @@ public sealed partial class McpToolProvider(
         {
             // Descarta a conexão; na próxima rodada conecta do zero.
             await DisposeClientAsync(client);
+            var error = ex is OperationCanceledException ? $"timeout ({options.ConnectTimeoutSeconds} s)" : ex.Message;
+            var hint = Hint(server, ex);
             _servers[name] = new ServerState(null, [], "error", current?.ServerName, null,
-                ex is OperationCanceledException ? $"timeout ({options.ConnectTimeoutSeconds} s)" : ex.Message,
-                DateTime.UtcNow);
+                hint is null ? error : $"{error} — {hint}", DateTime.UtcNow);
 
             if (current?.Status != "error")
             {
-                logger.LogWarning("MCP {Server}: falha ao conectar/listar ferramentas ({Message}). Nova tentativa em {Seconds} s.",
-                    name, ex.Message, Math.Max(30, options.RefreshIntervalSeconds));
+                logger.LogWarning("MCP {Server}: falha ao conectar/listar ferramentas ({Message}). {Hint} Nova tentativa em {Seconds} s.",
+                    name, error, hint ?? "", Math.Max(30, options.RefreshIntervalSeconds));
             }
         }
     }
@@ -218,6 +234,34 @@ public sealed partial class McpToolProvider(
         }
     }
 
+    /// <summary>Dica para os erros mais comuns.</summary>
+    private static string? Hint(McpServerOptions server, Exception ex)
+    {
+        var all = ex.ToString();
+        var headers = server.Headers.Count == 0
+            ? "nenhum header configurado"
+            : string.Join(", ", server.Headers.Select(h => $"{h.Key}={McpHttpDiagnosticsHandler.Mask(h.Key, h.Value)}"));
+
+        if (all.Contains("401") || all.Contains("403"))
+        {
+            return $"O servidor recusou a autenticação. Headers configurados: {headers}. " +
+                   "Confira o valor (user-secrets sobrescreve o appsettings) e se o nome do header está certo. " +
+                   "Com type=\"http\", depois do 401 o SDK ainda tenta SSE (GET) — o 405 que aparece junto é consequência, não a causa.";
+        }
+
+        if (all.Contains("405"))
+        {
+            return "O servidor não aceita o método usado. Se ele é Streamable HTTP, use type=\"streamable-http\".";
+        }
+
+        if (all.Contains("404"))
+        {
+            return "URL não encontrada: confira o caminho completo do endpoint MCP (ex.: .../api/mcp).";
+        }
+
+        return null;
+    }
+
     private static async Task DisposeClientAsync(McpClient? client)
     {
         if (client is null) return;
@@ -256,4 +300,6 @@ public sealed record McpServerStatus(
     string? ServerName,
     string? Error,
     DateTime? UpdatedAt,
+    string? Url,
+    IReadOnlyDictionary<string, string> Headers,
     IReadOnlyList<string> Tools);

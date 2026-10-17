@@ -8,11 +8,13 @@ public static class McpExtensions
         var options = builder.Configuration.GetSection(McpOptions.SectionName).Get<McpOptions>() ?? new McpOptions();
 
         builder.Services.AddSingleton(options);
+        builder.Services.AddTransient<McpHttpDiagnosticsHandler>();
         builder.Services.AddHttpClient(McpToolProvider.HttpClientName, http =>
-        {
-            // Streams SSE ficam abertos; o timeout de cada chamada é controlado pelo SDK MCP.
-            http.Timeout = Timeout.InfiniteTimeSpan;
-        });
+            {
+                // Streams SSE ficam abertos; o timeout de cada chamada é controlado pelo SDK MCP.
+                http.Timeout = Timeout.InfiniteTimeSpan;
+            })
+            .AddHttpMessageHandler<McpHttpDiagnosticsHandler>();
         builder.Services.AddSingleton<McpToolProvider>();
         builder.Services.AddHostedService(sp => sp.GetRequiredService<McpToolProvider>());
 
