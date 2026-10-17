@@ -127,11 +127,13 @@ public sealed class TelegramUpdateProcessor(
                 break;
 
             case "/novo":
+            case "/new":
                 await conversations.ResetAsync(new ConversationKey(Channel, chatId.ToString(), agentId), cancellationToken);
                 await SendTextAsync(chatId, "🆕 Conversa reiniciada. Pode mandar a próxima pergunta!", message.Id, cancellationToken);
                 break;
 
             case "/modelo":
+            case "/model":
                 if (argument is null)
                 {
                     var list = new StringBuilder("Modelos disponíveis:\n\n");
