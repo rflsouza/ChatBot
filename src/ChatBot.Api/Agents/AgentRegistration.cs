@@ -1,5 +1,6 @@
 using ChatBot.Api.Agents.Tools;
 using ChatBot.Api.Data;
+using ChatBot.Api.Mcp;
 using ChatBot.Api.Memory;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Agents.AI;
@@ -44,6 +45,10 @@ public static class AgentRegistration
                         Name = name,
                         Description = definition.Description,
                         ChatHistoryProvider = services.GetRequiredService<EfChatHistoryProvider>(),
+                        // Ferramentas MCP entram a cada execução (servidor que conecta depois passa a valer).
+                        AIContextProviders = definition.EnableTools && UsesMcp(definition)
+                            ? new AIContextProvider[] { new McpContextProvider(services.GetRequiredService<McpToolProvider>(), McpServersOf(definition)) }
+                            : null,
                         ChatOptions = new ChatOptions
                         {
                             Instructions = definition.Instructions,
@@ -58,4 +63,10 @@ public static class AgentRegistration
 
         return builder;
     }
+
+    /// <summary>null ou ["*"] = todos os servidores MCP; [] = nenhum.</summary>
+    private static IReadOnlyCollection<string>? McpServersOf(AgentDefinition definition) =>
+        definition.McpServers is null || definition.McpServers.Contains("*") ? null : definition.McpServers;
+
+    private static bool UsesMcp(AgentDefinition definition) => definition.McpServers is not { Count: 0 };
 }
