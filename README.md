@@ -516,6 +516,12 @@ erDiagram
   ficam salvos na ordem em que aconteceram.
 - `Text` é para leitura humana e relatórios; `Payload` guarda a `ChatMessage` completa (inclui tool calls) e é o que
   volta para o LLM nos próximos turnos.
+- Chamadas de ferramenta não têm texto, então o `Text` recebe um **resumo interno** (só para consulta no banco —
+  não vai para o LLM nem aparece para o usuário):
+  ```
+  Assistant  [functionCall] person_search {"name":"Rafael Souza"}
+  Tool       [functionResult] person_search succeeded: true (1234 chars)
+  ```
 - `SessionState` guarda só o estado da sessão (ex.: `{ "EfChatHistoryProvider": { "conversationId": "..." } }`), não as mensagens.
 - Índice único `(AgentId, SessionKey)`: no máximo uma conversa **ativa** por chave.
 

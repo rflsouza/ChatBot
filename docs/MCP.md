@@ -167,7 +167,7 @@ O comando precisa existir **na máquina onde a Api roda** (no servidor/container
    (`McpServers`) e as instruções que o servidor MCP publica. Um servidor que conectou depois passa a valer
    sem reiniciar.
 5. Quando o modelo pede uma ferramenta, o Agent Framework chama o servidor MCP (`tools/call`) e devolve o resultado.
-   A chamada e o resultado ficam na tabela `Messages`.
+   A chamada e o resultado ficam na tabela `Messages` — o `Text` recebe um resumo interno (`[functionCall] nome {args}` / `[functionResult] nome succeeded: true`) e o `Payload` tem os detalhes completos.
 
 Nomes de ferramentas são ajustados para o padrão aceito pelos LLMs (`a-z A-Z 0-9 _ -`, até 64 caracteres). Se dois
 servidores tiverem ferramentas com o mesmo nome, a segunda ganha o nome do servidor como prefixo.
@@ -218,7 +218,8 @@ Normal no Streamable HTTP: o `GET` abre um canal opcional de notificações, e m
 |---|---|
 | `404 Not Found` | URL incompleta — use o caminho exato do endpoint MCP |
 | `timeout (30 s)` | Servidor lento ou inacessível da máquina da Api; aumente `ConnectTimeoutSeconds` ou verifique rede/proxy/VPN |
-| Status `connected`, mas o modelo não usa as ferramentas | Agente sem o servidor em `McpServers`, `EnableTools: false`, ou modelo sem suporte a tools |
+| Status `connected`, mas o modelo não usa as ferramentas | Veja no log `ferramentas oferecidas=N [...]`. Se a ferramenta **não está na lista**: agente sem o servidor em `McpServers`, `EnableTools: false` ou o MCP não estava conectado naquele momento. Se **está na lista**, foi decisão do modelo — veja a linha abaixo |
+| Funciona numa conversa e na outra o modelo recusa ("não posso ajudar") | O modelo imita as próprias respostas anteriores do histórico. Comece outra conversa (`/novo` no Telegram, "Nova conversa" no web) e/ou diga nas `Instructions` do agente quando usar a ferramenta (ex.: "Para buscar contatos de pessoas, use a ferramenta person_search") |
 | `Type ... não suportado` | Use `streamable-http`, `sse`, `http` ou `stdio` |
 | stdio: `command not found` | Instale o comando (ex.: Node.js para `npx`) na máquina da Api |
 

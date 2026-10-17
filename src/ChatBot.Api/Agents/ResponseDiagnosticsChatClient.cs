@@ -121,9 +121,14 @@ public sealed class ResponseDiagnosticsChatClient(
             var reason = finishReason?.Value ?? "(nenhum)";
             if (textChars > 0 || toolCalls > 0)
             {
+                // "ferramentas oferecidas" = o que o modelo PODIA chamar (internas + MCP); "chamadas" = o que ele chamou.
                 logger.LogInformation(
-                    "LLM {Model}: finish_reason={FinishReason}, texto={TextChars} chars, raciocínio={ReasoningChars} chars, tools={ToolCalls}, tempo={Elapsed} ms, tentativa={Attempt}",
-                    modelId, reason, textChars, reasoningChars, toolCalls, stopwatch.ElapsedMilliseconds, attempt);
+                    "LLM {Model}: finish_reason={FinishReason}, texto={TextChars} chars, raciocínio={ReasoningChars} chars, " +
+                    "chamadas de tool={ToolCalls}, ferramentas oferecidas={ToolsOffered} [{ToolNames}], mensagens no contexto={ContextMessages}, " +
+                    "tempo={Elapsed} ms, tentativa={Attempt}",
+                    modelId, reason, textChars, reasoningChars, toolCalls,
+                    options?.Tools?.Count ?? 0, ToolNames(options), messageList.Count,
+                    stopwatch.ElapsedMilliseconds, attempt);
                 yield break;
             }
 
@@ -161,6 +166,12 @@ public sealed class ResponseDiagnosticsChatClient(
                 yield break;
             }
         }
+    }
+
+    private static string ToolNames(ChatOptions? options)
+    {
+        var names = options?.Tools?.Select(t => t.Name).ToList() ?? [];
+        return names.Count <= 15 ? string.Join(", ", names) : string.Join(", ", names.Take(15)) + $", … (+{names.Count - 15})";
     }
 
     /// <summary>Mensagem amigável para erros HTTP/rede do provedor.</summary>

@@ -1,4 +1,5 @@
 using ChatBot.Api.Data;
+using ChatBot.Api.Memory;
 using ChatBot.Api.Presence;
 using Microsoft.EntityFrameworkCore;
 
@@ -31,7 +32,10 @@ public static class ConversationEndpoints
             var messages = await db.Messages.AsNoTracking()
                 .Where(m => m.ConversationId == conversationId
                             && (m.Author == MessageAuthor.User || m.Author == MessageAuthor.Assistant)
-                            && m.Text != null && m.Text != "")
+                            && m.Text != null && m.Text != ""
+                            // resumos internos de ferramentas ([functionCall]/[functionResult]) não aparecem para o usuário
+                            && !m.Text.StartsWith(MessageText.FunctionCallPrefix)
+                            && !m.Text.StartsWith(MessageText.FunctionResultPrefix))
                 .OrderBy(m => m.Id)
                 .Select(m => new MessageDto(m.Author.ToString(), m.AuthorName, m.Text!, m.CreatedAt))
                 .ToListAsync(ct);

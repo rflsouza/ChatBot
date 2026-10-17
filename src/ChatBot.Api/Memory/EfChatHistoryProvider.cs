@@ -115,6 +115,12 @@ public sealed class EfChatHistoryProvider : ChatHistoryProvider
         conversation.Title ??= Truncate(newMessages.FirstOrDefault(m => m.Role == ChatRole.User)?.Text, 200);
         conversation.UpdatedAt = now;
 
+        // callId -> nome da ferramenta (o resultado só traz o callId; a chamada costuma vir no mesmo turno).
+        var callNames = newMessages
+            .SelectMany(m => m.Contents.OfType<FunctionCallContent>())
+            .GroupBy(c => c.CallId)
+            .ToDictionary(g => g.Key, g => g.First().Name);
+
         foreach (var message in newMessages)
         {
             db.Messages.Add(new ConversationMessage
@@ -122,7 +128,7 @@ public sealed class EfChatHistoryProvider : ChatHistoryProvider
                 ConversationId = conversationId,
                 Author = ToAuthor(message.Role),
                 AuthorName = message.AuthorName,
-                Text = message.Text,
+                Text = MessageText.Describe(message, callNames),
                 Payload = JsonSerializer.Serialize(message, AIJsonUtilities.DefaultOptions),
                 MessageId = message.MessageId,
                 CreatedAt = now,
