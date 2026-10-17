@@ -1,5 +1,7 @@
 using ChatBot.Web.Components;
 using ChatBot.Web.Services;
+using ChatBot.Web.Services.Presence;
+using Microsoft.AspNetCore.Components.Server.Circuits;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -14,6 +16,12 @@ builder.Services.AddHttpClient(ChatBotApiClient.HttpClientName, http =>
     http.Timeout = TimeSpan.FromMinutes(5); // respostas longas em streaming
 });
 builder.Services.AddScoped<ChatBotApiClient>();
+
+// Presença: rastreia os circuitos Blazor (conexões SignalR) e informa a Api quem está conectado.
+builder.Services.AddSingleton<WebPresenceRegistry>();
+builder.Services.AddScoped<CircuitPresence>();
+builder.Services.AddScoped<CircuitHandler, PresenceCircuitHandler>();
+builder.Services.AddHostedService<PresenceReporterService>();
 
 var app = builder.Build();
 

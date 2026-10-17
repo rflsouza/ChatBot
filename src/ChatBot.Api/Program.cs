@@ -4,6 +4,7 @@ using ChatBot.Api.Channels.Telegram;
 using ChatBot.Api.Channels.Web;
 using ChatBot.Api.Conversations;
 using ChatBot.Api.Data;
+using ChatBot.Api.Presence;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -25,6 +26,9 @@ builder.Services.AddDbContextFactory<ChatBotDbContext>(options =>
 // Núcleo: agentes (Microsoft Agent Framework) + conversas independentes de canal.
 builder.AddChatAgents();
 builder.Services.AddSingleton<IConversationService, ConversationService>();
+
+// Quem está com o chat web aberto agora (informado pelo ChatBot.Web).
+builder.Services.AddSingleton<WebPresenceTracker>();
 
 // Canais
 builder.Services.AddWebChannel();
@@ -51,6 +55,7 @@ app.MapGet("/health", () => Results.Ok("ok")).ExcludeFromDescription();
 app.MapWebChannel();   // AG-UI  -> Blazor
 app.MapRestChannel();  // REST   -> integrações/testes
 app.MapConversationEndpoints(app.Environment.IsDevelopment());
+app.MapPresenceEndpoints(app.Environment.IsDevelopment());
 app.MapTelegramChannel();       // webhook (só no modo Webhook)
 
 await app.RunAsync();

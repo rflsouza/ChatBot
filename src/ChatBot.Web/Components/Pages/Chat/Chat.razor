@@ -4,6 +4,7 @@
 @inject ChatBotApiClient Api
 @inject NavigationManager Nav
 @inject IJSRuntime JS
+@inject ChatBot.Web.Services.Presence.CircuitPresence Presence
 @implements IAsyncDisposable
 
 <PageTitle>ChatBot</PageTitle>
@@ -145,6 +146,7 @@
             selectedAgentId = agentId;
         }
         threadId = conversationThreadId;
+        Presence.SetConversation(agentId, conversationThreadId);
 
         loadingHistory = true;
         try
@@ -187,6 +189,7 @@
 
         error = null;
         toolCalls.Clear();
+        Presence.Touch();
         var userMessage = new ChatMessage(ChatRole.User, text);
         messages.Add(userMessage);
 

@@ -152,6 +152,9 @@ ChatBot/
    │  │  ├─ ConversationKey.cs        # (Canal, ConversationId, AgentId, UserId)
    │  │  ├─ ConversationService.cs    # acha sessão → executa agente → salva sessão
    │  │  └─ ConversationEndpoints.cs  # GET de histórico / listagem de conversas
+   │  ├─ Presence/                    # quem está com o chat web aberto (em memória)
+   │  │  ├─ WebPresenceTracker.cs     # lista recebida do Web, expira em 90 s
+   │  │  └─ PresenceEndpoints.cs      # PUT/DELETE (Web) e GET /api/presence/web
    │  └─ Channels/
    │     ├─ Web/WebChannelEndpoints.cs    # GET /api/agents + endpoints AG-UI por agente
    │     ├─ Rest/RestChannelEndpoints.cs  # POST/DELETE de conversas REST
@@ -165,6 +168,7 @@ ChatBot/
    └─ ChatBot.Web/                    # ── FRONTEND ──
       ├─ Program.cs                   # Blazor + HttpClient nomeado para a Api
       ├─ Services/ChatBotApiClient.cs # agentes, histórico salvo e AGUIChatClient por agente
+      ├─ Services/Presence/           # CircuitHandler + registro dos circuitos + envio para a Api
       ├─ Components/
       │  ├─ App.razor, Routes.razor, _Imports.razor
       │  ├─ Layout/MainLayout.razor
@@ -320,7 +324,9 @@ Ou abra `src/ChatBot.Api/ChatBot.Api.http` no Visual Studio / VS Code (extensão
 | `POST` | `/channels/rest/conversations/{conversationId}/messages` | REST | `{ "text": "...", "agentId": "assistant" }` → `{ "conversationId": "...", "reply": "..." }` |
 | `DELETE` | `/channels/rest/conversations/{conversationId}/?agentId=...` | REST | Encerra a conversa (a próxima mensagem começa outra). **O histórico continua no banco** |
 | `GET` | `/api/conversations/{agentId}/{sessionId}/messages` | Web | Mensagens (usuário/assistente) da conversa ativa. Web: `sessionId` = `threadId` |
-| `GET` | `/api/conversations?channel=&take=` | — | **Só em Development**: últimas conversas de todos os canais |
+| `GET` | `/api/conversations?channel=&online=&take=` | — | **Só em Development**: últimas conversas de todos os canais. Campo `isConnected` (web: `true`/`false`; outros canais: `null`). `online=true` = só conversas web abertas agora |
+| `GET` | `/api/presence/web` | Web | **Só em Development**: navegadores com o chat aberto agora (status, agente, conversa, última atividade) |
+| `PUT`/`DELETE` | `/api/presence/web/{instanceId}` | Web | Uso interno: o ChatBot.Web informa os circuitos conectados |
 | `GET` | `/api/conversations/{conversationId}` | — | **Só em Development**: todas as mensagens de uma conversa, incluindo ferramentas |
 | `POST` | `/channels/telegram/webhook` | Telegram | Recebe updates do Telegram. **Só existe no modo Webhook**; exige o header `X-Telegram-Bot-Api-Secret-Token` |
 | `GET` | `/openapi/v1.json` | — | Documento OpenAPI (apenas em Development) |
@@ -423,7 +429,48 @@ Internamente, `ConversationService`:
 `ResetAsync` **não apaga nada**: só desliga a sessão da chave (`SessionKey = NULL`). A próxima mensagem
 cria uma conversa nova; a antiga continua consultável.
 
-### 4. Banco de dados
+### 4. Usuários conectados (presença do chat web)
+
+O navegador **não fala direto com a Api**: ele mantém uma conexão **SignalR** (WebSocket) com o `ChatBot.Web`
+— o *circuito* do Blazor Server — e é o servidor do Web que chama a Api por HTTP. Por isso quem sabe quem está
+conectado é o Web, e ele avisa a Api:
+
+```mermaid
+sequenceDiagram
+    participant N as Navegador
+    participant W as ChatBot.Web
+    participant A as ChatBot.Api
+
+    N->>W: abre o chat (circuito SignalR)
+    W->>W: PresenceCircuitHandler registra o circuito
+    W->>A: PUT /api/presence/web/{instância} (lista completa)
+    loop a cada mudança e no mínimo a cada 30 s
+        W->>A: PUT /api/presence/web/{instância}
+    end
+    N--xW: fecha a aba / perde a rede
+    W->>W: status "reconnecting"; circuito fechado após ~3 min
+    W->>A: PUT (lista sem o circuito)
+```
+
+- `PresenceCircuitHandler` (um `CircuitHandler` do Blazor) acompanha abrir / cair / voltar / fechar de cada circuito.
+- A página de chat informa qual **agente** e **conversa** (`threadId`) está aberta e a hora da última mensagem.
+- `PresenceReporterService` envia a lista à Api; a Api guarda **em memória** (`WebPresenceTracker`) — é estado ao vivo,
+  não vai para o banco. Se o Web cair e parar de enviar, os clientes dele somem em **90 s**.
+- Funciona com **várias instâncias** do Web (cada uma envia a sua lista).
+- Status: `connected` ou `reconnecting` (a conexão caiu; o Blazor tenta reconectar e guarda o circuito por ~3 min).
+
+```bash
+curl http://localhost:5100/api/presence/web
+# [{ "clientId": "...", "status": "connected", "agentId": "assistant", "threadId": "4f9c...",
+#    "conversationId": "...", "title": "o que é C++?", "messageCount": 4, "lastActivityAt": "..." }]
+
+curl "http://localhost:5100/api/conversations?online=true"   # só conversas abertas agora
+```
+
+`conversationId = null` significa que a pessoa abriu a página mas ainda não mandou mensagem.
+Telegram e REST não têm "conexão": nesses canais `isConnected` é `null` (use `updatedAt` como última atividade).
+
+### 5. Banco de dados
 
 ```mermaid
 erDiagram
@@ -739,6 +786,8 @@ Checklist antes de publicar:
       ajuste o endpoint de histórico para montar a mesma chave e preencha/filtre a coluna `UserId`.
 - [ ] **Telegram:** modo `Webhook` com `SecretToken` forte (o endpoint rejeita chamadas sem o header correto),
       token em Key Vault/variável de ambiente e, se o bot não for público, `AllowedUserIds` preenchido.
+- [ ] Proteger o `PUT /api/presence/web/...` (hoje qualquer um que alcance a Api pode informar presença falsa):
+      deixe a Api acessível só pela rede interna ou exija um token de serviço do ChatBot.Web.
 - [ ] Remover/proteger os endpoints de listagem (`/api/conversations`) — hoje só existem em Development.
 - [ ] Banco gerenciado (PostgreSQL/SQL Server) com backup e política de retenção (as conversas podem conter dados pessoais — LGPD).
 - [ ] **Segredos** fora do repositório (Key Vault / variáveis de ambiente / Managed Identity).

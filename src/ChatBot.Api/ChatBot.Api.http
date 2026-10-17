@@ -41,3 +41,9 @@ GET {{host}}/api/conversations?take=20
 
 ### [Development] Lista só as do canal REST
 GET {{host}}/api/conversations?channel=rest
+
+### [Development] Só as conversas web abertas agora em algum navegador (isConnected = true)
+GET {{host}}/api/conversations?online=true
+
+### [Development] Navegadores conectados agora ao chat web
+GET {{host}}/api/presence/web
