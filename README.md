@@ -20,12 +20,15 @@ e com um backend **multicanal**: atende o chat web (Blazor), o **Telegram** e um
 7. [Endpoints do backend](#-endpoints-do-backend)
 8. [Como funciona por dentro](#-como-funciona-por-dentro)
 9. [Customizando](#-customizando)
-10. [Canal Telegram](#-canal-telegram)
-11. [Adicionando outro canal](#-adicionando-outro-canal)
-12. [Observabilidade](#-observabilidade)
-13. [Segurança e produção](#-segurança-e-produção)
-14. [Solução de problemas](#-solução-de-problemas)
-15. [Roadmap](#-roadmap)
+10. [Servidores MCP](#-servidores-mcp-ferramentas-externas)
+11. [Canal Telegram](#-canal-telegram)
+12. [Adicionando outro canal](#-adicionando-outro-canal)
+13. [Observabilidade](#-observabilidade)
+14. [Segurança e produção](#-segurança-e-produção)
+15. [Solução de problemas](#-solução-de-problemas)
+16. [Roadmap](#-roadmap)
+
+Pendências de escala/alta disponibilidade: [`TODO/HA.md`](TODO/HA.md).
 
 ---
 
@@ -39,6 +42,7 @@ e com um backend **multicanal**: atende o chat web (Blazor), o **Telegram** e um
 | Abstração de LLM | **[Microsoft.Extensions.AI](https://learn.microsoft.com/dotnet/ai/microsoft-extensions-ai) 10.10** (`IChatClient`) | Interface única para qualquer provedor + middlewares (logging, OpenTelemetry, function calling) |
 | Provedor | SDK `OpenAI` 2.14 + `Microsoft.Extensions.AI.OpenAI` | Funciona com OpenAI, Azure OpenAI / Microsoft Foundry, GitHub Models, Ollama... |
 | Protocolo Web | **[AG-UI](https://docs.ag-ui.com/)** (`Microsoft.Agents.AI.Hosting.AGUI.AspNetCore` *(preview)* + `AGUI.Client` 1.0) | Protocolo aberto de eventos (SSE) entre agente e interface: texto em streaming, tool calls, estado |
+| MCP | **[ModelContextProtocol](https://github.com/modelcontextprotocol/csharp-sdk) 2.2** (SDK C# oficial) | Ferramentas externas via servidores MCP (HTTP/SSE com headers, ou stdio) |
 | Telegram | **[Telegram.Bot](https://github.com/TelegramBots/Telegram.Bot) 22.10** | Cliente oficial da comunidade para a Bot API (polling e webhook) |
 | Persistência | **EF Core 10 + SQLite** | Memória dos agentes (histórico), sessões e registro de todas as mensagens. Troca fácil para PostgreSQL/SQL Server |
 | Frontend | **Blazor Web App** (Interactive Server) | UI em C#, streaming via SignalR |
@@ -132,6 +136,7 @@ ChatBot/
 ├─ ChatBot.slnx                       # solução (.NET 10, formato XML novo)
 ├─ Directory.Build.props              # net10.0, nullable, implicit usings para todos os projetos
 ├─ Directory.Packages.props           # versões de TODOS os pacotes NuGet
+├─ TODO/HA.md                         # plano de escala horizontal / alta disponibilidade
 └─ src/
    ├─ ChatBot.Api/                    # ── BACKEND ──
    │  ├─ Program.cs                   # composição: banco + núcleo + canais
@@ -152,6 +157,11 @@ ChatBot/
    │  │  ├─ ConversationKey.cs        # (Canal, ConversationId, AgentId, UserId)
    │  │  ├─ ConversationService.cs    # acha sessão → executa agente → salva sessão
    │  │  └─ ConversationEndpoints.cs  # GET de histórico / listagem de conversas
+   │  ├─ Mcp/                         # servidores MCP
+   │  │  ├─ McpOptions.cs             # seção Mcp:Servers (type/url/headers/command/args/env)
+   │  │  ├─ McpToolProvider.cs        # conexões, lista de ferramentas, reconexão em segundo plano
+   │  │  ├─ McpContextProvider.cs     # AIContextProvider: injeta as ferramentas a cada execução
+   │  │  └─ McpExtensions.cs          # AddMcpServers / GET /api/mcp/servers
    │  ├─ Presence/                    # quem está com o chat web aberto (em memória)
    │  │  ├─ WebPresenceTracker.cs     # lista recebida do Web, expira em 90 s
    │  │  └─ PresenceEndpoints.cs      # PUT/DELETE (Web) e GET /api/presence/web
@@ -329,6 +339,7 @@ Ou abra `src/ChatBot.Api/ChatBot.Api.http` no Visual Studio / VS Code (extensão
 | `PUT`/`DELETE` | `/api/presence/web/{instanceId}` | Web | Uso interno: o ChatBot.Web informa os circuitos conectados |
 | `GET` | `/api/conversations/{conversationId}` | — | **Só em Development**: todas as mensagens de uma conversa, incluindo ferramentas |
 | `POST` | `/channels/telegram/webhook` | Telegram | Recebe updates do Telegram. **Só existe no modo Webhook**; exige o header `X-Telegram-Bot-Api-Secret-Token` |
+| `GET` | `/api/mcp/servers` | — | **Só em Development**: status e ferramentas de cada servidor MCP |
 | `GET` | `/openapi/v1.json` | — | Documento OpenAPI (apenas em Development) |
 
 Exemplo (simplificado) de eventos AG-UI devolvidos pelo canal Web:
@@ -599,6 +610,97 @@ O Agent Framework também tem pacotes prontos (ex.: `Microsoft.Agents.AI.Anthrop
 
 ---
 
+## 🔌 Servidores MCP (ferramentas externas)
+
+Os agentes podem usar ferramentas de qualquer servidor **MCP** (Model Context Protocol), com o
+[SDK C# oficial](https://github.com/modelcontextprotocol/csharp-sdk) (`ModelContextProtocol.Core` 2.2).
+O formato é o mesmo de VS Code / Claude / Kiro: `type`, `url`, `headers` (HTTP) ou `command`, `args`, `env` (stdio).
+
+### Cadastrar servidores
+
+Em `src/ChatBot.Api/appsettings.json`, seção `Mcp:Servers` (o nome da chave é o nome do servidor):
+
+```jsonc
+"Mcp": {
+  "ConnectTimeoutSeconds": 30,      // conectar + listar ferramentas
+  "RefreshIntervalSeconds": 300,    // tenta de novo os que falharam e recarrega as ferramentas
+  "Servers": {
+    "XgenMcp-pr-3351": {
+      "type": "http",                                   // http (auto), streamable-http, sse ou stdio
+      "url": "https://desenv.teste.com.br/v2/api/mcp",
+      "headers": {
+        "X-API-KEY": "",                                // segredo → user-secrets (abaixo)
+        "X-TENANT-ID": "11"
+      }
+    },
+    "filesystem": {                                     // exemplo stdio (processo local)
+      "type": "stdio",
+      "command": "npx",
+      "args": [ "-y", "@modelcontextprotocol/server-filesystem", "C:/dados" ],
+      "allowedTools": [ "read_file", "list_directory" ] // opcional: só estas ferramentas
+    }
+  }
+}
+```
+
+**Segredos dos headers** (chaves de API, tokens) vão em user-secrets / variáveis de ambiente:
+
+```bash
+cd src/ChatBot.Api
+dotnet user-secrets set "Mcp:Servers:XgenMcp-pr-3351:Headers:X-API-KEY" "xxxxxxx"
+# variável de ambiente equivalente: Mcp__Servers__XgenMcp-pr-3351__Headers__X-API-KEY
+```
+
+| Opção | Padrão | Descrição |
+|---|---|---|
+| `type` | `http` | `http` detecta Streamable HTTP ou SSE; `streamable-http`; `sse`; `stdio` |
+| `url` | — | Endpoint (http/sse) |
+| `headers` | `{}` | Enviados em toda chamada (http/sse) |
+| `command` / `args` / `env` | — | Processo local (stdio) |
+| `enabled` | `true` | `false` desliga sem apagar a configuração |
+| `allowedTools` | `[]` | Lista de ferramentas permitidas (vazio = todas) |
+| `toolPrefix` | — | Prefixo nos nomes (ex.: `xgen` → `xgen_buscar`) para evitar conflito |
+
+### Quais agentes usam quais MCPs
+
+Em cada agente, `McpServers`:
+
+```jsonc
+{ "Id": "assistant", "McpServers": [ "XgenMcp-pr-3351" ] }  // só esse
+{ "Id": "expert" }                                           // omitido (ou ["*"]) = todos os habilitados
+{ "Id": "tradutor", "McpServers": [] }                       // nenhum
+```
+
+`"EnableTools": false` desliga todas as ferramentas do agente (internas e MCP).
+
+### Como funciona
+
+- `McpToolProvider` (serviço em segundo plano) conecta em cada servidor **na inicialização, sem bloquear a Api**:
+  se um MCP estiver fora, a Api sobe normalmente e tenta de novo a cada `RefreshIntervalSeconds`.
+- `McpContextProvider` (um `AIContextProvider` do Agent Framework) acrescenta as ferramentas **a cada execução**
+  do agente — um MCP que conectou depois, ou que ganhou ferramentas novas, passa a valer sem reiniciar.
+- Nomes de ferramentas são ajustados ao padrão dos LLMs (`[a-zA-Z0-9_-]`, até 64 caracteres). Se dois servidores
+  tiverem ferramentas com o mesmo nome, a segunda recebe o nome do servidor como prefixo.
+- Instruções publicadas pelo servidor MCP (`instructions`) são adicionadas ao prompt do agente.
+- Vale para **todos os canais** (web, Telegram, REST). As chamadas aparecem no chat web como 🔧 e ficam gravadas na
+  tabela `Messages` (`Author = Tool`).
+
+No log da Api:
+
+```
+info: ChatBot.Api.Mcp.McpToolProvider[0] MCP XgenMcp-pr-3351: conectado (Xgen), 5 ferramenta(s): buscar_cliente, ...
+warn: ChatBot.Api.Mcp.McpToolProvider[0] MCP filesystem: falha ao conectar/listar ferramentas (...). Nova tentativa em 300 s.
+```
+
+Em Development, `GET /api/mcp/servers` mostra status, erro e ferramentas de cada servidor (**nunca** os headers).
+
+> ⚠️ **Segurança:** as ferramentas MCP são executadas **automaticamente** quando o modelo pede, para qualquer usuário de
+> qualquer canal. Cadastre só servidores confiáveis, restrinja com `allowedTools` e use credenciais com o mínimo de
+> permissão. Um servidor MCP também pode tentar influenciar o modelo pelas descrições/resultados das ferramentas
+> (*prompt injection*). Aprovação humana de ferramentas sensíveis está no roadmap.
+
+---
+
 ## 📨 Canal Telegram
 
 O bot do Telegram usa **os mesmos agentes, a mesma memória e as mesmas tabelas** do chat web.
@@ -820,6 +922,8 @@ Checklist antes de publicar:
 | Telegram: `409 Conflict: terminated by other getUpdates request` | Outra instância está fazendo polling com o mesmo token — pare-a ou use outro bot |
 | Telegram: bot não responde no modo Webhook | Confira `WebhookUrl` (HTTPS público, mesmo caminho `/channels/telegram/webhook`). Veja `https://api.telegram.org/bot<TOKEN>/getWebhookInfo` (campo `last_error_message`) |
 | Telegram: bot não responde em grupo | Ele só responde a comandos ou menções (`@SeuBot ...`) |
+| MCP: ferramentas não aparecem | Veja `GET /api/mcp/servers` e o log `MCP <nome>: falha...`. Confira `url`, headers (`401`/`403`) e se o agente tem o servidor em `McpServers` |
+| MCP: `Type ... não suportado` | Use `http`, `streamable-http`, `sse` ou `stdio` |
 | Telegram: "Você não tem permissão" | Seu id não está em `Channels:Telegram:AllowedUserIds` |
 
 ---
@@ -838,7 +942,9 @@ Checklist antes de publicar:
 - [ ] Renderização de **Markdown** sanitizado no chat
 - [ ] Autenticação (Entra ID) no frontend e backend
 - [ ] **Aspire AppHost** para orquestrar Api + Web + dashboard com um único `dotnet run`
-- [ ] Ferramentas via **MCP** (Model Context Protocol)
+- [x] Ferramentas via **MCP** (HTTP/SSE com headers e stdio, por agente)
+- [ ] Cadastro de MCPs pela API/banco (sem editar appsettings)
+- [ ] Ver [`TODO/HA.md`](TODO/HA.md) para escala horizontal
 - [ ] Upload de arquivos/imagens (conteúdo multimodal)
 - [ ] Aprovação humana de ferramentas sensíveis (*human-in-the-loop* via AG-UI)
 - [ ] Migrar para os componentes de IA do Blazor quando o .NET 11 for lançado

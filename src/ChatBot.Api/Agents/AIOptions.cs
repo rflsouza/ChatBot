@@ -49,4 +49,10 @@ public sealed class AgentDefinition
     public required string Model { get; set; }
     public string Instructions { get; set; } = "Você é um assistente prestativo. Responda em português do Brasil.";
     public bool EnableTools { get; set; } = true;
+
+    /// <summary>
+    /// Servidores MCP (nomes de Mcp:Servers) que este agente pode usar.
+    /// Omitido ou ["*"] = todos os habilitados; [] = nenhum. Só vale com EnableTools = true.
+    /// </summary>
+    public List<string>? McpServers { get; set; }
 }

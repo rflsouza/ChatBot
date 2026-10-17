@@ -4,6 +4,7 @@ using ChatBot.Api.Channels.Telegram;
 using ChatBot.Api.Channels.Web;
 using ChatBot.Api.Conversations;
 using ChatBot.Api.Data;
+using ChatBot.Api.Mcp;
 using ChatBot.Api.Presence;
 using Microsoft.EntityFrameworkCore;
 
@@ -24,6 +25,7 @@ builder.Services.AddDbContextFactory<ChatBotDbContext>(options =>
     options.UseSqlite(builder.Configuration.GetConnectionString("ChatBot") ?? "Data Source=chatbot.db"));
 
 // Núcleo: agentes (Microsoft Agent Framework) + conversas independentes de canal.
+builder.AddMcpServers();   // catálogo de servidores MCP (seção "Mcp")
 builder.AddChatAgents();
 builder.Services.AddSingleton<IConversationService, ConversationService>();
 
@@ -56,6 +58,7 @@ app.MapWebChannel();   // AG-UI  -> Blazor
 app.MapRestChannel();  // REST   -> integrações/testes
 app.MapConversationEndpoints(app.Environment.IsDevelopment());
 app.MapPresenceEndpoints(app.Environment.IsDevelopment());
+app.MapMcpEndpoints(app.Environment.IsDevelopment());
 app.MapTelegramChannel();       // webhook (só no modo Webhook)
 
 await app.RunAsync();
